@@ -1,0 +1,1263 @@
+/*****************************************************************
+@Name: APTS_CloneCommonUtil
+@Author: Drashtee Shah
+@CreateDate: 26 August 2016.
+@Description: Common Clone class to clone opportunity, quotations and related objects 
+@UsedBy: Quoattion revision and Opportunity Clone
+******************************************************************
+
+@ModifiedBy: Meet Desai
+@ModifiedDate: 14 Oct, 2016
+@ChangeDescription: Added cloneDocumentCollateInfo function to clone Document Collate Info 
+*******************************************************************
+@ModifiedBy: Meet Desai
+@ModifiedDate: 9 Nov, 2016
+@ChangeDescription: Added condition related to CCP Stream Functionalities
+*******************************************************************
+@ModifiedBy: Karsan Prajapati
+@ModifiedDate: 29th Jun 2017
+@ChangeDescription: Modified cloneOptty and finalcloneProposalLI methods to accommodate HPALM-11473, HPALM-11475.
+************************************************************************
+@ModifiedBy: Ajithkumar Kothandaramasamy
+@ModifiedDate: 10th March 2018
+@ChangeDescription: As part of Req 5748, removed "isValidCCPUser" check and replaced it with quote record type check.
+************************************************************************/
+public class APTS_CloneCommonUtil{
+
+    //Clone Opportunity
+    public static Map<Id,Opportunity> cloneOptty(Set<Id> setOpttyid){
+        
+            List<String> fieldNames = new List<String>();
+            Set<String> fieldFromCusSettingSet = new Set<String>(); // Holds fields of Field Set
+            List<String> fieldsToCopy = new List<String>();
+            APTS_Quotation_Clone_Properties__c mapCloneCustomSetting =  APTS_Quotation_Clone_Properties__c.getAll().values();
+            System.debug('mapCloneCustomSetting: '+mapCloneCustomSetting);
+            List<Schema.FieldSetMember> nullifyFSM = findFieldSet(mapCloneCustomSetting.APTS_Fields_to_be_Nullify_Oppty__c);
+            System.debug('nullifyFSM: '+nullifyFSM);
+            if(!nullifyFSM.isEmpty() && nullifyFSM != null){
+                //Get Api names from Field Set
+                for(Schema.FieldSetMember f : nullifyFSM){
+                    fieldNames.add(f.getFieldPath());
+                }
+            }
+            System.debug('fieldNames oppty: '+fieldNames);
+
+            List<Opportunity> listOldOptty;
+            Map<Id,Opportunity> mapOptty =  new Map<Id,Opportunity>();
+            List<String> listOpttyFields = APTS_CloneCommonUtil.getsoqlfields('Opportunity');
+
+            //Adding fieldNames to Set
+            if(!listOpttyFields.isEmpty() && !fieldNames.isEmpty())
+            {
+                for(String apiName:fieldNames)
+                {
+                    fieldFromCusSettingSet.add(apiName.toLowerCase());
+                }
+            }
+            //If fields of Opportunity matches fieldset's fields, do not add it in fieldsToCopy
+            if(!listOpttyFields.isEmpty())
+            {
+                for(String apiName:listOpttyFields)
+                {
+                    if(!fieldFromCusSettingSet.contains(apiName))
+                    {
+                        fieldsToCopy.add(apiName);
+                    }
+                }
+            }
+
+            System.debug('fieldsToCopy oppty: '+fieldsToCopy);
+            // Added BAL ID in below query for HPALM 8420 by Mukesh
+            String strOpttySoql = 'select ABB_Location__r.BALId__c,' + String.join(fieldsToCopy, ',') + ' from Opportunity'
+                + ' where Id IN :setOpttyid';
+            listOldOptty = Database.query(strOpttySoql);
+            if(!listOldOptty.isEmpty()){
+                //Added by husen               
+
+
+
+
+                map<String, ABB_Probability_Field_Value_Mapping__c> abbProbabilityFieldValueMappingMap = new map<String, ABB_Probability_Field_Value_Mapping__c>();
+                for(ABB_Probability_Field_Value_Mapping__c abbProbabilityFieldValueMapping : ABB_Probability_Field_Value_Mapping__c.getAll().values()){
+                    abbProbabilityFieldValueMappingMap.put(abbProbabilityFieldValueMapping.ABB_Sales_Stage__c + '_' + abbProbabilityFieldValueMapping.Sales_Pursuit_Progress__c + '_' + abbProbabilityFieldValueMapping.Customer_Preference__c, abbProbabilityFieldValueMapping);
+                }
+                
+                Opportunity oNewOptty = new Opportunity();
+                for(Opportunity oOldOptty : listOldOptty){
+                    oNewOptty = oOldOptty.clone();
+                    oNewOptty.CQP_Quotation_Number__c = null;
+                    oNewOptty.Legacy_Opportunity_ID__c = null;
+                    oNewOptty.Opportunity_Migration_ID__c = null;
+                    oNewOptty.RR_Doc_ID__c = null;
+                    oNewOptty.Name = oOldOptty.Name + '_COPY';
+                    oNewOptty.BidSubmissionDate_OneTimeCheck__c = false;
+                    oNewOptty.OwnerId = userInfo.getUserId();
+                    oNewOptty.APTS_Has_Ordered_Quotation__c = false;
+
+                    // Added for HPALM 8420 by Mukesh
+                    if(oOldOptty.ABB_Location__c!=null && oOldOptty.ABB_Location__r.BALId__c!=null){
+                        oNewOptty.ABB_Location__r.BALId__c =oOldOptty.ABB_Location__r.BALId__c;
+                    }
+                    
+
+                    /**
+                    * @jira/hpalm: HPALM-11473
+                    * @owner: Karsan Prajapati
+                    * @modified-date: 29th Jun 2017
+                    * @desc: Skip Migration ID field while cloning Opprtunity.
+                    * @notes: Commented out the code as fieldset is exist to set null value.
+                    **///BEG:
+                    //oNewOptty.Opportunity_Migration_ID__c = null;
+                    //END:
+
+                    if(APTS_CPQCommonUtil.isValidCCPUser()){
+                        if(oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_BIDDING || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_NEGOTIATION || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_CLOSED || 
+                           oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_CLOSED_LOST || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_CLOSED_WON || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_CLOSED_LOST_WITHOUT_ABB_BID || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_CLOSED_CANCELLED)
+                        {
+                           oNewOptty.StageName = APTS_Constants.OPTTY_STAGE_BIDDING;
+                           oNewOptty.Sales_Pursuit_Progress__c = APTS_Constants.OPTTY_UNDER_PREPARATION;
+                           //Added By Husen - SIT HPALM 6649
+ 
+
+
+
+
+                           if(!abbProbabilityFieldValueMappingMap.isEmpty() && abbProbabilityFieldValueMappingMap.containskey(oNewOptty.StageName + '_' + oNewOptty.Sales_Pursuit_Progress__c + '_' + oOldOptty.Customer_Preference__c)){
+                                oNewOptty.ABB_Probability__c = Double.valueOf(abbProbabilityFieldValueMappingMap.get(oNewOptty.StageName + '_' + oNewOptty.Sales_Pursuit_Progress__c + '_' + oOldOptty.Customer_Preference__c).Probability__c);
+                                oNewOptty.Probability = Double.valueOf(abbProbabilityFieldValueMappingMap.get(oNewOptty.StageName + '_' + oNewOptty.Sales_Pursuit_Progress__c + '_' + oOldOptty.Customer_Preference__c).Probability__c);
+                           }
+                            
+                        }else if(oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_PROSPECTING){
+                            oNewOptty.StageName = APTS_Constants.OPTTY_STAGE_PROSPECTING;
+                            oNewOptty.Sales_Pursuit_Progress__c = APTS_Constants.OPTTY_CAPTURED;
+                        }else if(oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_OPPORTUNITY_PURSUIT){
+                            oNewOptty.StageName = APTS_Constants.OPTTY_STAGE_OPPORTUNITY_PURSUIT;
+                            oNewOptty.Sales_Pursuit_Progress__c = APTS_Constants.OPTTY_UNDER_PURSUIT;
+                        }
+                        if(oOldOptty.closeDate < System.today()){
+                            oNewOptty.Requested_Bid_Submission_Date_Comm__c = Date.Today().addDays(1);
+                            oNewOptty.RFQ_Issue_Date__c = Date.Today().addDays(1);
+                            oNewOptty.closeDate = Date.Today().addDays(1);                                                       
+                            System.debug('in Oppty oNewOptty.closeDate: '+oNewOptty.closeDate);
+                        }
+                        //Added by husen - SIT2 HPALM 8441
+                        if(oNewOptty.Delivery_Date__c < System.today()){
+                            oNewOptty.Delivery_Date__c = Date.Today().addDays(1);
+                        }                        
+                    }
+                    //if(oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_PROSPECTING || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_OPPORTUNITY_PURSUIT){
+                    //    oNewOptty.StageName = APTS_Constants.OPTTY_STAGE_OPPORTUNITY_PURSUIT;
+                    //}else if(oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_PROSPECTING || oOldOptty.StageName == APTS_Constants.OPTTY_STAGE_OPPORTUNITY_PURSUIT){
+                    //    oNewOptty.StageName = APTS_Constants.OPTTY_STAGE_OPPORTUNITY_PURSUIT;
+                    //}else 
+                                       
+                    mapOptty.put(oOldOptty.Id,oNewOptty);
+                }
+            }
+            return mapOptty;
+    }
+
+    //Clone Proposals from Opportunity (Used for Clone optty with quotes)
+    public static Map<Id,Apttus_Proposal__Proposal__c> cloneProposalsfromOptty(Map<Id,Opportunity> mapOptty,Set<Id> setOpttyid){
+        List<Apttus_Proposal__Proposal__c> listOldproposals;
+        Map<Id,Apttus_Proposal__Proposal__c> mapProposals = new Map<Id,Apttus_Proposal__Proposal__c>();
+
+        List<String> listPropFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Proposal__Proposal__c');
+        String strPropSoql = 'select ' + String.join(listPropFields, ',') + ' from Apttus_Proposal__Proposal__c'
+            + ' where Apttus_Proposal__Primary__c = true and APTS_Active_Version__c = true and Apttus_Proposal__Opportunity__c IN :setOpttyid';
+        listOldproposals = Database.query(strPropSoql);
+        if(!listOldproposals.isEmpty()){
+            Apttus_Proposal__Proposal__c oNewProp = new Apttus_Proposal__Proposal__c();
+            for(Apttus_Proposal__Proposal__c oOldProp : listOldproposals){
+                oNewProp = oOldProp.clone();
+                oNewProp.Apttus_Proposal__Opportunity__c = mapOptty.get(oOldProp.Apttus_Proposal__Opportunity__c).Id;
+                oNewProp.APTS_Quotation_Number_Internal__c = APTS_CPQCommonUtil.getQuotationNumber();
+                oNewProp.APTS_External_Revision__c = '';
+                oNewProp.APTS_Internal_Revision__c = null;
+                oNewProp.APTS_Cloned_From_ID__c = null;
+                oNewProp.APTS_Revised_From_ID__c = null;
+                oNewProp.APTS_IsRevised__c = false;
+                mapProposals.put(oOldProp.Id,oNewProp);
+            }
+        }
+        APTS_Constants.isForInternalNumber = true;
+        return mapProposals;
+    }
+    
+     //Cloning proposals from Optty only with fields not mentioned in nullify fieldset    
+     public static Map<Id,Apttus_Proposal__Proposal__c> newcloneProposalsfromOptty(Map<Id,Opportunity> mapOptty,Set<Id> setOpttyid){
+        APTS_Quotation_Clone_Properties__c mapCloneCustomSetting;
+        List<Schema.FieldSetMember> nullifyFSM = new List<Schema.FieldSetMember>();
+        List<String> fieldNames = new List<String>();
+        Set<String> fieldFromCusSettingSet = new Set<String>();
+        List<String> fieldsToCopy = new List<String>();
+        List<Apttus_Proposal__Proposal__c> listOldproposals;
+        Map<Id,Apttus_Proposal__Proposal__c> mapProposals = new Map<Id,Apttus_Proposal__Proposal__c>();
+        Map<id,Apttus_Proposal__Proposal__c> mapOpptyIdProp = new Map <id,Apttus_Proposal__Proposal__c>();
+        
+        System.debug('into clone method :');
+        
+        mapCloneCustomSetting = APTS_Quotation_Clone_Properties__c.getAll().values();
+        
+        if (SobjectType.Apttus_Proposal__Proposal__c.FieldSets.getMap().containsKey(mapCloneCustomSetting.APTS_Fields_to_be_Nullify__c) && SobjectType.Apttus_Proposal__Proposal__c.FieldSets.getMap().get(mapCloneCustomSetting.APTS_Fields_to_be_Nullify__c).getFields() != null ){
+            
+                nullifyFSM = SobjectType.Apttus_Proposal__Proposal__c.FieldSets.getMap().get(mapCloneCustomSetting.APTS_Fields_to_be_Nullify__c).getFields();
+           
+        }
+        //nullifyFSM = findFieldSet(mapCloneCustomSetting.APTS_Fields_to_be_Nullify__c);
+        if(!nullifyFSM.isEmpty() && nullifyFSM != null){
+            //Get Api names from Field Set
+            for(Schema.FieldSetMember f : nullifyFSM){
+                fieldNames.add(f.getFieldPath());
+            }
+        }
+        List<String> listPropFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Proposal__Proposal__c');
+        if(!listPropFields.isEmpty() && !fieldNames.isEmpty())
+        {
+            for(String apiName:fieldNames)
+            {
+                fieldFromCusSettingSet.add(apiName.toLowerCase());
+            }
+        }
+        if(!listPropFields.isEmpty())
+        {
+            for(String apiName:listPropFields)
+            {
+                if(!fieldFromCusSettingSet.contains(apiName))
+                {
+                    fieldsToCopy.add(apiName);
+                }
+            }
+        }
+        
+        
+        
+        if(!fieldsToCopy.isEmpty()){
+            String strPropSoql = 'select ' + String.join(fieldsToCopy, ',') + ' from Apttus_Proposal__Proposal__c'
+                + ' where Apttus_Proposal__Primary__c = true and APTS_Active_Version__c = true and Apttus_Proposal__Opportunity__c IN :setOpttyid';
+                System.debug('Before Proposal query :');
+                
+                System.debug('soql query :  '+strPropSoql);
+            listOldproposals = Database.query(strPropSoql);
+            List<Apttus_Proposal__Proposal__c> listOldTQproposals = new List<Apttus_Proposal__Proposal__c>();
+            listOldTQproposals = APTS_CPQCommonUtil.isTQFlow(listOldproposals);
+            System.debug('After Proposal query :');
+            if(!listOldTQproposals.isEmpty()){
+                Apttus_Proposal__Proposal__c oNewProp = new Apttus_Proposal__Proposal__c();
+                for(Apttus_Proposal__Proposal__c oOldProp : listOldTQproposals){
+                        oNewProp = oOldProp.clone();
+                        oNewProp.Apttus_Proposal__Opportunity__c = mapOptty.get(oOldProp.Apttus_Proposal__Opportunity__c).Id;
+                        //oNewProp.APTS_Quotation_Number_Internal__c = APTS_CPQCommonUtil.getQuotationNumber();
+                        oNewProp.APTS_Quotation_Name__c = oOldProp.APTS_Quotation_Name__c + '_COPY';
+                        oNewProp.APTS_External_Revision__c = '';
+                        oNewProp.APTS_Internal_Revision__c = null;
+                        oNewProp.APTS_Cloned_From_ID__c = null;
+                        oNewProp.APTS_Revised_From_ID__c = null;
+                        oNewProp.APTS_IsRevised__c = false;
+                        oNewProp.Apttus_Proposal__Approval_Stage__c = 'Draft';
+                        oNewProp.APTS_Probability__c = mapOptty.get(oOldProp.Apttus_Proposal__Opportunity__c).ABB_Probability__c;
+                        oNewProp.Apttus_Proposal__ExpectedEndDate__c = APTS_CPQCommonUtil.setProposalExpirationDate(oNewProp.APTS_ABB_Location_Bidding_unit__c,mapOptty.get(oOldProp.Apttus_Proposal__Opportunity__c));
+                        oNewProp.APTS_ABB_Sales_Stage__c = oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_BIDDING || oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_NEGOTIATION || oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_CLOSED || 
+                                               oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_CLOSED_LOST || oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_CLOSED_WON || oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_CLOSED_LOST_WITHOUT_ABB_BID || oOldProp.APTS_ABB_Sales_Stage__c == APTS_Constants.OPTTY_STAGE_CLOSED_CANCELLED ? APTS_Constants.OPTTY_STAGE_BIDDING : null ; 
+					    
+
+                        mapOpptyIdProp.put(oNewProp.Apttus_Proposal__Opportunity__c, oNewProp);
+                        oNewProp = APTS_CPQCommonUtil.setProposalValuesFromOppty(mapOpptyIdProp);
+                        System.debug('oNewProp.APTS_Probability__c: '+oNewProp.APTS_Probability__c);
+                        System.debug('ABB_Probability__c1: '+mapOptty.get(oOldProp.Apttus_Proposal__Opportunity__c).ABB_Probability__c);
+                        mapProposals.put(oOldProp.Id,oNewProp);
+                    }
+                }
+            }
+
+        return mapProposals;
+    }
+
+    //Clone Proposal from Proposal (used for Quotation revision and Quotation Clone)
+    public static Map<Id,Apttus_Proposal__Proposal__c> cloneProposalsfromProposal(ID propId){
+        List<Apttus_Proposal__Proposal__c> listOldproposal;
+        Map<Id,Apttus_Proposal__Proposal__c> mapProposals = new Map<Id,Apttus_Proposal__Proposal__c>();
+
+        List<String> listPropFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Proposal__Proposal__c');
+        String strPropSoql = 'select ' + String.join(listPropFields, ',') + ' from Apttus_Proposal__Proposal__c'
+            + ' where Id =: propId';
+        listOldproposal = Database.query(strPropSoql);
+        if(!listOldproposal.isEmpty()){
+            Apttus_Proposal__Proposal__c oNewProp = new Apttus_Proposal__Proposal__c();
+            for(Apttus_Proposal__Proposal__c oOldProp : listOldproposal){
+                oNewProp = oOldProp.clone();
+                mapProposals.put(oOldProp.Id,oNewProp);
+            }
+        }
+
+        return mapProposals;
+    }
+
+    //Clone Product Configuration
+    /*public static Map<Id,Apttus_Config2__ProductConfiguration__c> cloneprodConfig(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Apttus_Config2__ProductConfiguration__c> listOldProdCon;
+        Map<Id,List<Apttus_Config2__ProductConfiguration__c>> mapPropnProdCon = new Map<Id,List<Apttus_Config2__ProductConfiguration__c>>();
+        Map<Id,Apttus_Config2__ProductConfiguration__c> mapprodConfig = new Map<Id,Apttus_Config2__ProductConfiguration__c>();
+
+        List<String> listProdConFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__ProductConfiguration__c');
+        String strPropConSoql = 'select ' + String.join(listProdConFields, ',') + ' from Apttus_Config2__ProductConfiguration__c'
+            + ' where Apttus_QPConfig__Proposald__c IN :setQuoteID';
+        listOldProdCon = Database.query(strPropConSoql);
+        if(!listOldProdCon.isEmpty()){
+            for(Id propID : mapProposals.keySet()){
+                List<Apttus_Config2__ProductConfiguration__c> listProdCon = new List<Apttus_Config2__ProductConfiguration__c>();
+                for(Apttus_Config2__ProductConfiguration__c oProdCon : listOldProdCon){
+                    if(propID == oProdCon.Apttus_QPConfig__Proposald__c){
+                        listProdCon.add(oProdCon);
+                    }
+                }
+                mapPropnProdCon.put(propID,listProdCon);
+            }
+
+            if(!mapPropnProdCon.isEmpty()){
+                for(Id oldPropId : mapPropnProdCon.keySet()){
+                    List<Apttus_Config2__ProductConfiguration__c> listConfig = mapPropnProdCon.get(oldPropId);
+                    for(Apttus_Config2__ProductConfiguration__c oConfig : listConfig){
+                        Apttus_Config2__ProductConfiguration__c oNewconfig = new Apttus_Config2__ProductConfiguration__c();
+                        if(oConfig.Apttus_Config2__Status__c == APTS_Constants.ProdConfig_Stage_New || oConfig.Apttus_Config2__Status__c == APTS_Constants.ProdConfig_Stage_Saved){
+                            if(!Test.isRunningTest()){
+                                Apttus_CPQApi.CPQ.CreateCartRequestDO request = new Apttus_CPQApi.CPQ.CreateCartRequestDO();
+                                request.QuoteId = mapProposals.get(oldPropId).Id;
+                                Apttus_CPQApi.CPQ.CreateCartResponseDO response = Apttus_CPQApi.CPQWebService.createCart(request);
+             
+                                String cartId = response.CartId;
+                                oNewconfig = new Apttus_Config2__ProductConfiguration__c(Id=cartId);
+                                oNewconfig.Apttus_Config2__Status__c = 'Saved';
+                                mapprodConfig.put(oConfig.Id,oNewconfig);
+                            }
+                        }else{
+                            oNewconfig = oConfig.clone();
+                            oNewconfig.Apttus_QPConfig__Proposald__c = mapProposals.get(oldPropId).Id;
+                            mapprodConfig.put(oConfig.Id,oNewconfig);
+                        }
+                    }
+                }
+
+                //if(!mapprodConfig.isEmpty()){
+                //  upsert mapprodConfig.values();
+                //}
+
+            }
+        
+        }
+
+        return mapprodConfig;
+    }*/
+    
+    //New Product Configuration logic
+    //select id from Apttus_Config2__ProductConfiguration__c where Apttus_Config2__Status__c NOT IN('Superseded') AND Apttus_QPConfig__Proposald__c =: propId order by lastmodifieddate desc limit 1
+    /*public static Map<Id,Apttus_Config2__ProductConfiguration__c> tempcloneprodConfig(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Apttus_Config2__ProductConfiguration__c> listOldProdCon;
+        Map<Id,List<Apttus_Config2__ProductConfiguration__c>> mapPropnProdCon = new Map<Id,List<Apttus_Config2__ProductConfiguration__c>>();
+        Map<Id,Apttus_Config2__ProductConfiguration__c> mapprodConfig = new Map<Id,Apttus_Config2__ProductConfiguration__c>();
+
+        List<String> listProdConFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__ProductConfiguration__c');
+        String strPropConSoql = 'select ' + String.join(listProdConFields, ',') + ' from Apttus_Config2__ProductConfiguration__c'
+            + ' where Apttus_QPConfig__Proposald__c IN :setQuoteID order by lastmodifieddate desc limit 1';
+        listOldProdCon = Database.query(strPropConSoql);
+        for(Apttus_Config2__ProductConfiguration__c oOldconfig  :listOldProdCon){
+            Apttus_Config2__ProductConfiguration__c oNewconfig = new Apttus_Config2__ProductConfiguration__c();
+        if(oOldconfig.Apttus_Config2__Status__c == APTS_Constants.Quotation_Stage_Superseeded){
+                    oNewconfig = oOldconfig.clone();
+                    oNewconfig.Apttus_QPConfig__Proposald__c = mapProposals.get(oOldconfig.Apttus_QPConfig__Proposald__c).Id;
+                    mapprodConfig.put(oOldconfig.Id,oNewconfig);
+                } else if(!Test.isRunningTest()) {
+                    
+                        Apttus_CPQApi.CPQ.CreateCartRequestDO request = new Apttus_CPQApi.CPQ.CreateCartRequestDO();
+                        request.QuoteId = mapProposals.get(oOldconfig.Apttus_QPConfig__Proposald__c).Id;
+                        Apttus_CPQApi.CPQ.CreateCartResponseDO response = Apttus_CPQApi.CPQWebService.createCart(request);
+             
+                        String cartId = response.CartId;
+                        oNewconfig = new Apttus_Config2__ProductConfiguration__c(Id=cartId);
+                        oNewconfig.Apttus_Config2__Status__c = 'Saved';
+                        mapprodConfig.put(oOldconfig.Id,oNewconfig);
+                    }else{
+                        oNewconfig = oOldconfig.clone();
+                        oNewconfig.Apttus_QPConfig__Proposald__c = mapProposals.get(oOldconfig.Apttus_QPConfig__Proposald__c).Id;
+                        mapprodConfig.put(oOldconfig.Id,oNewconfig);
+                    }
+                }
+        }
+        
+        return mapprodConfig;
+        
+    }*/
+
+    //Final Product Configuration logic
+    //select id from Apttus_Config2__ProductConfiguration__c where Apttus_Config2__Status__c NOT IN('Superseded') AND Apttus_QPConfig__Proposald__c =: propId order by lastmodifieddate desc limit 1
+    public static Map<Id,Apttus_Config2__ProductConfiguration__c> cloneprodConfig(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Apttus_Config2__ProductConfiguration__c> listOldProdCon;
+        Map<Id,Apttus_Config2__ProductConfiguration__c> mapPropnProdCon = new Map<Id,Apttus_Config2__ProductConfiguration__c>();
+        Map<Id,Apttus_Config2__ProductConfiguration__c> mapprodConfig = new Map<Id,Apttus_Config2__ProductConfiguration__c>();
+        Apttus_Config2__ProductConfiguration__c oNewconfig;
+        String statusSaved = APTS_Constants.ProdConfig_Stage_Saved;
+        String statusFinalized = APTS_Constants.PRODUCT_CONFIG_STATUS_FINALIZED;
+        String statusInCollaboration = APTS_Constants.PRODCONFIG_STATUS_IN_COLLABORATION;
+        String businessObjectTypeProposal = APTS_Constants.BUSINESS_OBJECT_TYPE_PROPOSAL;
+
+        List<String> listProdConFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__ProductConfiguration__c');
+        String strPropConSoql = 'select ' + String.join(listProdConFields, ',') + ' from Apttus_Config2__ProductConfiguration__c'
+            + ' where (Apttus_Config2__Status__c =:statusSaved OR Apttus_Config2__Status__c =:statusFinalized OR Apttus_Config2__Status__c =:statusInCollaboration) AND Apttus_Config2__BusinessObjectType__c =: businessObjectTypeProposal AND Apttus_QPConfig__Proposald__c IN :setQuoteID order by lastmodifieddate desc limit 1';
+        listOldProdCon = Database.query(strPropConSoql);
+        if(!listOldProdCon.isEmpty()){
+            for(Apttus_Config2__ProductConfiguration__c oProdCon :listOldProdCon){
+                if(!mapPropnProdCon.containsKey(oProdCon.Apttus_QPConfig__Proposald__c)){
+                    mapPropnProdCon.put(oProdCon.Apttus_QPConfig__Proposald__c,oProdCon);
+                }
+            }
+        }
+        if(!mapPropnProdCon.isEmpty()){
+            for(Apttus_Config2__ProductConfiguration__c oOldconfig  :mapPropnProdCon.values()){
+                oNewconfig = new Apttus_Config2__ProductConfiguration__c();
+                if(!Test.isRunningTest()){
+                    Apttus_CPQApi.CPQ.CreateCartRequestDO request = new Apttus_CPQApi.CPQ.CreateCartRequestDO();
+                    request.QuoteId = mapProposals.get(oOldconfig.Apttus_QPConfig__Proposald__c).Id;
+                    Apttus_CPQApi.CPQ.CreateCartResponseDO response = Apttus_CPQApi.CPQWebService.createCart(request);
+             
+                    String cartId = response.CartId;
+                    oNewconfig = new Apttus_Config2__ProductConfiguration__c(Id=cartId);
+                    oNewconfig.Apttus_Config2__Status__c = 'Saved';
+                    oNewconfig.APTS_Is_Place_Holder_Configuration__c = true;
+                    mapprodConfig.put(oOldconfig.Id,oNewconfig);
+                }else{
+                    oNewconfig = oOldconfig.clone();
+                    oNewconfig.Apttus_QPConfig__Proposald__c = mapProposals.get(oOldconfig.Apttus_QPConfig__Proposald__c).Id;
+                    mapprodConfig.put(oOldconfig.Id,oNewconfig);
+                }
+            }
+        }
+        return mapprodConfig;
+        
+    }
+
+
+    //Clone Line Items
+    public static Map<Id,Apttus_Config2__LineItem__c> cloneLineItems(Map<Id,Apttus_Config2__ProductConfiguration__c> mapProdCon, Set<Id> setProdConId){
+        List<Apttus_Config2__LineItem__c> listOldLI;
+        Map<Id,Apttus_Config2__LineItem__c> mapLI = new Map<Id,Apttus_Config2__LineItem__c>();
+
+        List<String> listLIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__LineItem__c');
+        String strLISoql = 'select ' + String.join(listLIFields, ',') + ',Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c from Apttus_Config2__LineItem__c'
+             + ' where Apttus_Config2__ConfigurationId__c IN :setProdConId';
+        listOldLI = Database.query(strLISoql);
+        System.debug('listLIFields :'+listLIFields);
+        if(!listOldLI.isEmpty()){
+            Apttus_Config2__LineItem__c oNewLI = new Apttus_Config2__LineItem__c();
+            for(Apttus_Config2__LineItem__c oOldLI : listOldLI){
+                System.debug('oOldLI.APTS_Mode_of_Transportation__c :'+oOldLI.APTS_Mode_of_Transportation__c);
+                oNewLI = oOldLI.clone();
+                System.debug('oNewLI.APTS_Mode_of_Transportation__c :'+oNewLI.APTS_Mode_of_Transportation__c);
+                oNewLI.Apttus_Config2__IsReadOnly__c = false;
+                oNewLI.Apttus_Config2__LineStatus__c = APTS_Constants.PROPOSALLI_LINE_STATUS_NEW;
+                oNewLI.Apttus_Config2__ConfigurationId__c = mapProdCon.get(oOldLI.Apttus_Config2__ConfigurationId__c).Id;
+                //Commented by Husen - to resolved external configuration line item id field value blank in case ot revision and cloning.
+                //oNewLI.APTS_External_Configurator_LineItem_ID__c ='';
+               // oNewLI.APTS_External_Configurator_Product_Desc__c='';
+                //oNewLI.APTS_External_Configurator_Product_Name__c='';
+                APTS_SyncCartExtn.processClonedLI_forIntg(oNewLI);
+                mapLI.put(oOldLI.Id,oNewLI);
+
+            }
+        }
+
+        return mapLI;
+    }
+  
+  //Added by jaiminee to clone lineitem through Apttus API
+    //Clone Line Items
+    public static Map<Id,APTS_Wrapper_Copy_Line_Items> cloneLineItemsThruAPI(Map<Id,Apttus_Config2__ProductConfiguration__c> mapClonedProductConfig, Set<Id> setProdConId){
+        List<Apttus_Config2__LineItem__c> listOldLI;
+        List<Apttus_Config2__LineItem__c> listResponseLI;
+        List<Decimal> listOldLILineNumbers = new List<Decimal>();
+        List<Decimal> listLineNumb;
+        List<Apttus_CPQApi.CPQ.SelectedProductDO> selectedProdDOList = new List<Apttus_CPQApi.CPQ.SelectedProductDO>();
+        List<String> listLIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__LineItem__c');
+        Set<Id> keyProd = mapClonedProductConfig.keySet();
+        Apttus_CPQApi.CPQ.AddMultiProductRequestDO requests = new Apttus_CPQApi.CPQ.AddMultiProductRequestDO();
+        Map<Decimal,Apttus_Config2__LineItem__c> mapOldLI= new Map<Decimal,Apttus_Config2__LineItem__c>();
+        Map<Id,APTS_Wrapper_Copy_Line_Items> mapResponseLI= new Map<Id,APTS_Wrapper_Copy_Line_Items>();
+        Map<String,Schema.SObjectField> lineItemOldFields = Schema.getGlobalDescribe().get('Apttus_Config2__LineItem__c').getDescribe().fields.getMap();
+        
+        String strLISoql = 'select ' + String.join(listLIFields, ',') + ',Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c from Apttus_Config2__LineItem__c'
+             + ' where Apttus_Config2__ConfigurationId__c IN : keyProd ORDER BY Apttus_Config2__LineNumber__c';
+        listOldLI = Database.query(strLISoql);
+        System.debug('listOldLI'+listOldLI);
+        
+        if(!listOldLI.isEmpty()){
+            System.debug('requests'+requests);
+            for(Apttus_Config2__LineItem__c oOldLI: listOldLI)
+            {
+                mapOldLI.put(oOldLI.Apttus_Config2__LineNumber__c,oOldLI);
+                if(requests.CartId==null)
+                {
+                    requests.CartId = mapClonedProductConfig.get(oOldLI.Apttus_Config2__ConfigurationId__c).Id;   
+                }
+                Apttus_CPQApi.CPQ.SelectedProductDO prodDO = new Apttus_CPQApi.CPQ.SelectedProductDO();
+                prodDO.ProductId = oOldLI.Apttus_Config2__ProductId__c;
+                prodDO.Quantity = oOldLI.Apttus_Config2__Quantity__c;
+                listOldLILineNumbers.add(oOldLI.Apttus_Config2__LineNumber__c);
+                selectedProdDOList.add(prodDO);
+                
+            }
+            System.debug('mapOldLI'+mapOldLI);
+            requests.SelectedProducts = selectedProdDOList;
+            System.debug('Going to call addMultiProducts webservice with request :: ' + requests);
+            Apttus_CPQApi.CPQ.AddMultiProductResponseDO response = Apttus_CPQApi.CPQWebService.addMultiProducts(requests);
+            System.debug('response'+response); 
+            listLineNumb=response.LineNumbers;
+            String strResponseLISoql = 'select ' + String.join(listLIFields, ',') + ',Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c from Apttus_Config2__LineItem__c'
+         + ' where Apttus_Config2__LineNumber__c IN :listLineNumb AND Apttus_Config2__ConfigurationId__c IN :setProdConId ORDER BY Apttus_Config2__LineNumber__c';
+            listResponseLI=Database.query(strResponseLISoql);
+            System.debug('listResponseLI'+listResponseLI);
+            Integer i = 0;
+            
+            for(Apttus_Config2__LineItem__c oResLI :listResponseLI)
+            {
+
+                oResLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIFCM(oResLI, mapOldLI.get(listOldLILineNumbers.get(i)));
+                oResLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIQuotation(oResLI, mapOldLI.get(listOldLILineNumbers.get(i)));
+                oResLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIIntegration(oResLI, mapOldLI.get(listOldLILineNumbers.get(i)));
+
+                /*for(String strLIField : lineItemOldFields.keySet())
+                {
+                    if(strLIField !='Id' && strLIField !='apttus_config2__linenumber__c' && lineItemOldFields.get(strLIField).getDescribe().isUpdateable())
+                    {
+                        oResLI.put(strLIField,mapOldLI.get(listOldLILineNumbers.get(i)).get(strLIField));
+                        oResLI.Apttus_Config2__IsReadOnly__c = false;
+                        oResLI.Apttus_Config2__LineStatus__c = APTS_Constants.PROPOSALLI_LINE_STATUS_NEW;
+                        oResLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIFCM(oResLI, mapOldLI.get(listOldLILineNumbers.get(i)));
+                        oResLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIQuotation(oResLI, mapOldLI.get(listOldLILineNumbers.get(i)));
+                        oResLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIIntegration(oResLI, mapOldLI.get(listOldLILineNumbers.get(i)));
+                    }
+                }*/
+                mapResponseLI.put(mapOldLI.get(listOldLILineNumbers.get(i)).Id,new APTS_Wrapper_Copy_Line_Items(mapOldLI.get(listOldLILineNumbers.get(i)), oResLI));
+                i++;
+            }
+        }
+        
+        System.debug('mapResponseLI'+mapResponseLI);
+        return mapResponseLI;
+    }
+
+    //Clone Product Attribute Value records
+    public static Map<Id,Apttus_Config2__ProductAttributeValue__c> clonePAV(Map<Id,Apttus_Config2__LineItem__c> mapLI, Set<Id> setLIId){
+        List<Apttus_Config2__ProductAttributeValue__c> listOldPAV;
+        Map<Id,Apttus_Config2__ProductAttributeValue__c> mapPAV = new Map<Id,Apttus_Config2__ProductAttributeValue__c>();
+
+        List<String> listPAVFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__ProductAttributeValue__c');
+        String strPAVSoql = 'select ' + String.join(listPAVFields, ',') + ' from Apttus_Config2__ProductAttributeValue__c'
+             + ' where Apttus_Config2__LineItemId__c IN :setLIId';
+        listOldPAV = Database.query(strPAVSoql);
+        if(!listOldPAV.isEmpty()){
+            Apttus_Config2__ProductAttributeValue__c oNewPAV = new Apttus_Config2__ProductAttributeValue__c();
+            for(Apttus_Config2__ProductAttributeValue__c oOldPAV : listOldPAV){
+                oNewPAV = oOldPAV.clone();
+                oNewPAV.Apttus_Config2__LineItemId__c = mapLI.get(oOldPAV.Apttus_Config2__LineItemId__c).Id;
+                mapPAV.put(oOldPAV.Id,oNewPAV);
+
+            }
+        }
+
+        return mapPAV;
+    }
+
+
+    //Clone all the proposal Line Items - Added by Drashtee Shah
+    public static Map<Id,Apttus_Proposal__Proposal_Line_Item__c> cloneProposalLI(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Apttus_Proposal__Proposal_Line_Item__c> listOldPropLI;
+        Map<Id,Apttus_Proposal__Proposal_Line_Item__c> mapNewPropLI = new Map<Id,Apttus_Proposal__Proposal_Line_Item__c>();
+
+        List<String> listPropLIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Proposal__Proposal_Line_Item__c');
+        String strPropLISoql = 'select ' + String.join(listPropLIFields, ',') + ' from Apttus_Proposal__Proposal_Line_Item__c'
+             + ' where Apttus_Proposal__Proposal__c IN :setQuoteID';
+        listOldPropLI = Database.query(strPropLISoql);
+        if(!listOldPropLI.isEmpty()){
+            Apttus_Proposal__Proposal_Line_Item__c oNewPropLI;
+            for(Apttus_Proposal__Proposal_Line_Item__c oOldPropLI : listOldPropLI){
+                oNewPropLI = oOldPropLI.clone();
+                Apttus_Proposal__Proposal__c oProp = mapProposals.get(oOldPropLI.Apttus_Proposal__Proposal__c);
+                oNewPropLI.Apttus_Proposal__Proposal__c = oProp.Id;
+                mapNewPropLI.put(oOldPropLI.Id,oNewPropLI);
+            }
+        }
+        return mapNewPropLI;
+    }
+    
+    //Clone all the proposal Line Items - Added by Drashtee Shah
+    public static Map<Id,Apttus_Proposal__Proposal_Line_Item__c> finalcloneProposalLI(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID,Map<Id,Apttus_Config2__LineItem__c> mapClonedLI){
+        List<Apttus_Proposal__Proposal_Line_Item__c> listOldPropLI;
+        Map<Id,Apttus_Proposal__Proposal_Line_Item__c> mapNewPropLI = new Map<Id,Apttus_Proposal__Proposal_Line_Item__c>();
+
+
+System.debug('insidefinalcloneProposalLI ===============');
+        List<String> listPropLIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Proposal__Proposal_Line_Item__c');
+        String strPropLISoql = 'select ' + String.join(listPropLIFields, ',') + ' from Apttus_Proposal__Proposal_Line_Item__c'
+             + ' where Apttus_Proposal__Proposal__c IN :setQuoteID';
+        listOldPropLI = Database.query(strPropLISoql);
+        if(!listOldPropLI.isEmpty()){
+            Apttus_Proposal__Proposal_Line_Item__c oNewPropLI;
+            for(Apttus_Proposal__Proposal_Line_Item__c oOldPropLI : listOldPropLI){
+                oNewPropLI = oOldPropLI.clone();
+                Apttus_Proposal__Proposal__c oProp = mapProposals.get(oOldPropLI.Apttus_Proposal__Proposal__c);
+                oNewPropLI.Apttus_Proposal__Proposal__c = oProp.Id;
+                oNewPropLI.Apttus_QPConfig__LineStatus__c = APTS_Constants.PROPOSALLI_LINE_STATUS_NEW;
+                if(mapClonedLI.containsKey(oOldPropLI.Apttus_QPConfig__DerivedFromId__c)){
+                    oNewPropLI.Apttus_QPConfig__DerivedFromId__c = mapClonedLI.get(oOldPropLI.Apttus_QPConfig__DerivedFromId__c).Id;
+                }else{
+                    oNewPropLI.Apttus_QPConfig__DerivedFromId__c = null;
+                }
+                System.debug('APTS_Quote_Currency__c==============='+oNewPropLI.APTS_Quote_Currency__c);
+
+                /**
+                * @jira/hpalm: HPALM-11475
+                * @owner: Karsan Prajapati
+                * @modified-date: 29th Jun 2017
+                * @desc: Skip External ID fields while cloning Proposal Line Items.
+                **///BEG:
+                oNewPropLI.APTS_External_ID__c = null;
+                //END:
+                //BEG: Reset Valid Configuration count for HPALM-17167 by Juhi Rawal on 19th Jan,2018.
+                oNewPropLI.APTS_Is_Valid_Configuration_Count__c = 0;
+                //END: Reset Valid Configuration count for HPALM-17167 by Juhi Rawal on 19th Jan,2018.
+                mapNewPropLI.put(oOldPropLI.Id,oNewPropLI);
+
+            }
+        }
+        return mapNewPropLI;
+    }
+
+    //Clone CQP Competitors
+    public static Map<Id,Competitor_CQP__c> cloneCQPCompetitors(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Competitor_CQP__c> listOldCQPCompetitor;
+        Map<Id,Competitor_CQP__c> mapNewCQPCompetitor = new Map<Id,Competitor_CQP__c>();
+
+        List<String> listCQPCompFields = APTS_CloneCommonUtil.getsoqlfields('Competitor_CQP__c');
+        String strCQPCompSoql = 'select ' + String.join(listCQPCompFields, ',') + ' from Competitor_CQP__c'
+             + ' where Quote_Proposal__c IN :setQuoteID';
+        listOldCQPCompetitor = Database.query(strCQPCompSoql);
+        if(!listOldCQPCompetitor.isEmpty()){
+            Competitor_CQP__c oNewCQPComp;
+            for(Competitor_CQP__c oOldCQPComp : listOldCQPCompetitor){
+                oNewCQPComp = oOldCQPComp.clone();
+                oNewCQPComp.Quote_Proposal__c = mapProposals.get(oOldCQPComp.Quote_Proposal__c).Id;
+                oNewCQPComp.APTS_Winning_Company__c = false;
+                /**
+                * @jira/hpalm: HPALM-11473, HPALM-11475
+                * @owner: Karsan Prajapati
+                * @modified-date: 30th Jun 2017
+                * @desc: Skip External ID field while cloning Quotation Competitor.
+                **///BEG:
+                oNewCQPComp.APTS_External_Id__c = null;
+                //END:
+                mapNewCQPCompetitor.put(oOldCQPComp.Id,oNewCQPComp);
+            }
+        }
+        return mapNewCQPCompetitor;
+    }
+
+    //Clone Competitors
+    public static Map<Id,APTS_Competitor__c> cloneCompetitors(Map<Id,Apttus_Proposal__Proposal_Line_Item__c> mapProposalLI, Set<Id> setPropLIID){
+        List<APTS_Competitor__c> listOldCompetitor;
+        Map<Id,APTS_Competitor__c> mapNewCompetitor = new Map<Id,APTS_Competitor__c>();
+
+        List<String> listCompetitorFields = APTS_CloneCommonUtil.getsoqlfields('APTS_Competitor__c');
+        String strCompetitorSoql = 'select ' + String.join(listCompetitorFields, ',') + ' from APTS_Competitor__c'
+             + ' where APTS_Quotation_Line_Item__c IN :setPropLIID';
+        listOldCompetitor = Database.query(strCompetitorSoql);
+        if(!listOldCompetitor.isEmpty()){
+            APTS_Competitor__c oNewCompetitor;
+            for(APTS_Competitor__c oOldCompetitor : listOldCompetitor){
+                oNewCompetitor = oOldCompetitor.clone();
+                oNewCompetitor.APTS_Winning_Company__c = false;
+                oNewCompetitor.APTS_Quotation_Line_Item__c = mapProposalLI.get(oOldCompetitor.APTS_Quotation_Line_Item__c).Id;
+                mapNewCompetitor.put(oOldCompetitor.Id,oNewCompetitor);
+            }
+        }
+        return mapNewCompetitor;
+    }
+
+    //Clone proposal product Attribute Value records
+    public static Map<Id,Apttus_QPConfig__ProposalProductAttributeValue__c> clonePPAV(Map<Id,Apttus_Proposal__Proposal_Line_Item__c> mapPropLI, Set<Id> setPropLIId){
+        List<Apttus_QPConfig__ProposalProductAttributeValue__c> listOldPPAV;
+        Map<Id,Apttus_QPConfig__ProposalProductAttributeValue__c> mapPPAV = new Map<Id,Apttus_QPConfig__ProposalProductAttributeValue__c>();
+
+        List<String> listPPAVFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_QPConfig__ProposalProductAttributeValue__c');
+        String strPPAVSoql = 'select ' + String.join(listPPAVFields, ',') + ' from Apttus_QPConfig__ProposalProductAttributeValue__c'
+             + ' where Apttus_QPConfig__LineItemId__c IN :setPropLIId';
+        listOldPPAV = Database.query(strPPAVSoql);
+        if(!listOldPPAV.isEmpty()){
+            Apttus_QPConfig__ProposalProductAttributeValue__c oNewPPAV = new Apttus_QPConfig__ProposalProductAttributeValue__c();
+            for(Apttus_QPConfig__ProposalProductAttributeValue__c oOldPPAV : listOldPPAV){
+                oNewPPAV = oOldPPAV.clone();
+                oNewPPAV.Apttus_QPConfig__LineItemId__c = mapPropLI.get(oOldPPAV.Apttus_QPConfig__LineItemId__c).Id;
+                mapPPAV.put(oOldPPAV.Id,oNewPPAV);
+
+            }
+        }
+
+        return mapPPAV;
+    }
+
+    //Clone Standard Notes and Attachments
+    //fix heap size error, defect 16984
+    public static Map<id,Attachment> cloneStdAttachmentsWithSizeLimit(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID, Set<Id> clonedAttachment,  Integer maxSizeOfAttachements){
+        List<Attachment> clonedAttatchmentsToInsert = new List<Attachment>();
+        Map<Id,Attachment> mapAttach = new Map<Id,Attachment>();
+        List<String> listAttachFields = APTS_CloneCommonUtil.getsoqlfields('Attachment');
+        String strAttachSoql = 'select '
+                + String.join(listAttachFields, ',')
+                + ' from Attachment'
+                + ' where ParentId IN :setQuoteID'
+                + ' and Id NOT IN :clonedAttachment';
+
+        Integer sizeOfAttachments = 0;
+        for(Attachment att : Database.query(strAttachSoql)){
+            sizeOfAttachments += att.BodyLength;
+            if(sizeOfAttachments < maxSizeOfAttachements) {
+                Attachment theAttachement  = new Attachment(
+                        Body = att.Body,
+                        Name = att.Name,
+                        IsPrivate = att.IsPrivate,
+                        Description = att.Description,
+                        ParentId = mapProposals.get(att.ParentId).Id
+                );
+                mapAttach.put(att.Id, theAttachement);
+                clonedAttatchmentsToInsert.add(theAttachement);
+            }
+            else {
+                if(!clonedAttatchmentsToInsert.isEmpty()) {
+                    insert clonedAttatchmentsToInsert;
+                    mapAttach = getMapOfOldNewAttachments(mapAttach);
+
+                }
+                throw new APTS_TooLargeAttachmentsException('Too large size of attachments which should be copied', mapAttach);
+            }
+        }
+        if(!clonedAttatchmentsToInsert.isEmpty()) {
+            insert clonedAttatchmentsToInsert;
+            }
+        mapAttach = getMapOfOldNewAttachments(mapAttach);
+        return mapAttach;
+        }
+
+    /* This method removes attachments body which cause an error when the returned map is transferred to VFP because attachments body are downloaded. This is a reason of errors
+     * Additionally the body is not required for relted operation as the logic is based on Id of attachments
+     */
+    private static Map<Id,Attachment> getMapOfOldNewAttachments(Map<Id,Attachment> mapOfOldNewAttachments){
+        for(Id tmpId:mapOfOldNewAttachments.keySet()){
+            Attachment curretnAtt = mapOfOldNewAttachments.get(tmpId);
+
+            mapOfOldNewAttachments.put(tmpId, new Attachment(id=curretnAtt.Id));
+        }
+        return mapOfOldNewAttachments;
+    }
+
+    //Clone Quotation External hyperlink records
+    public static Map<id,APTS_Quotation_External_Hyperlink__c> cloneQuotationHyprlnk(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<APTS_Quotation_External_Hyperlink__c> listOldQuoteHyprlnk;
+        Map<Id,APTS_Quotation_External_Hyperlink__c> mapQuoteHyprlnk = new Map<Id,APTS_Quotation_External_Hyperlink__c>();
+
+        List<String> listQuoteLnkFields = APTS_CloneCommonUtil.getsoqlfields('APTS_Quotation_External_Hyperlink__c');
+        String strQuoteLnkSoql = 'select ' + String.join(listQuoteLnkFields, ',') + ' from APTS_Quotation_External_Hyperlink__c'
+            + ' where APTS_Quotation__c IN :setQuoteID';
+        listOldQuoteHyprlnk = Database.query(strQuoteLnkSoql);
+        System.debug(logginglevel.Error,'listOldQuoteHyprlnk : ' + listOldQuoteHyprlnk);
+        if(!listOldQuoteHyprlnk.isEmpty()){
+            APTS_Quotation_External_Hyperlink__c oNewQuoteLnk = new APTS_Quotation_External_Hyperlink__c();
+            for(APTS_Quotation_External_Hyperlink__c oOldQuoteLnk : listOldQuoteHyprlnk){
+                oNewQuoteLnk = oOldQuoteLnk.clone();
+                oNewQuoteLnk.APTS_Quotation__c = mapProposals.get(oOldQuoteLnk.APTS_Quotation__c).Id;
+                mapQuoteHyprlnk.put(oOldQuoteLnk.Id,oNewQuoteLnk);
+            }
+        }
+
+        return mapQuoteHyprlnk;
+    }
+
+    //Clone Custom Notes and Attachments
+    public static Map<Id,APTS_Custom_Notes_and_Attachments__c> cloneCustomNotesnAttach(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID , Map<Id,Attachment> mapAttach){
+        List<APTS_Custom_Notes_and_Attachments__c> listOldCustNotesnAttach;
+        Map<Id,APTS_Custom_Notes_and_Attachments__c> mapCustNotesnAttach = new Map<Id,APTS_Custom_Notes_and_Attachments__c>();
+
+        List<string> listNotesnattach = APTS_CloneCommonUtil.getsoqlfields('APTS_Custom_Notes_and_Attachments__c');
+        String strNotesnAttach = 'select ' + String.join(listNotesnattach, ',') + ' from APTS_Custom_Notes_and_Attachments__c'
+            + ' where APTS_Quotation__c IN :setQuoteID';
+        listOldCustNotesnAttach = Database.query(strNotesnAttach);
+        if(!listOldCustNotesnAttach.isEmpty()){
+            APTS_Custom_Notes_and_Attachments__c oNewNotesnAttach = new APTS_Custom_Notes_and_Attachments__c();
+            for(APTS_Custom_Notes_and_Attachments__c oOldNotesnAttach : listOldCustNotesnAttach){
+                oNewNotesnAttach = oOldNotesnAttach.clone();
+                oNewNotesnAttach.APTS_Quotation__c = mapProposals.get(oOldNotesnAttach.APTS_Quotation__c).Id;
+                if(!String.isBlank(oNewNotesnAttach.APTS_Attachment_Id__c)){
+                    oNewNotesnAttach.APTS_Attachment_Id__c = mapAttach.get(oNewNotesnAttach.APTS_Attachment_Id__c).Id;
+                }
+                mapCustNotesnAttach.put(oOldNotesnAttach.Id,oNewNotesnAttach);
+            }
+        }
+
+        return mapCustNotesnAttach;
+    }
+
+    //Clone Document Collate Info
+    public static Map<Id,Apttus_Proposal__DocumentCollateInfo__c> cloneDocumentCollateInfo(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID , Map<Id,Attachment> mapAttach){
+        //As part of Req 5748, removed "isValidCCPUser" check and replaced it with quote record type check.
+        Map<Id,Apttus_Proposal__Proposal__c> mapTQProposals = new Map<Id,Apttus_Proposal__Proposal__c>();
+        mapTQProposals = APTS_CPQCommonUtil.isTQFlow(mapProposals);
+        Set<Id> setTQQuoteID = new Set<Id>();
+        setTQQuoteID = APTS_CPQCommonUtil.isTQFlow(setQuoteID);
+        if(!mapTQProposals.isEmpty() && mapTQProposals.size()>0 && setTQQuoteID.size()>0){
+            List<Apttus_Proposal__DocumentCollateInfo__c> listOldDocumentCollateInfo;
+            Map<Id,Apttus_Proposal__DocumentCollateInfo__c> mapNewDocumentCollateInfo = new Map<Id,Apttus_Proposal__DocumentCollateInfo__c>();
+    
+            List<String> listDocumentCollateInfoFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Proposal__DocumentCollateInfo__c');
+            String strDocumentCollateInfoSoql = 'select ' + String.join(listDocumentCollateInfoFields, ',') + ' from Apttus_Proposal__DocumentCollateInfo__c'
+                 + ' where Apttus_Proposal__ProposalId__c IN :setTQQuoteID';
+            listOldDocumentCollateInfo = Database.query(strDocumentCollateInfoSoql);
+            if(!listOldDocumentCollateInfo.isEmpty()){
+                Apttus_Proposal__DocumentCollateInfo__c oNewDocumentCollateInfo;
+                for(Apttus_Proposal__DocumentCollateInfo__c oOldDocumentCollateInfo : listOldDocumentCollateInfo){
+                    oNewDocumentCollateInfo = oOldDocumentCollateInfo.clone();
+                    oNewDocumentCollateInfo.Apttus_Proposal__ProposalId__c = mapTQProposals.get(oOldDocumentCollateInfo.Apttus_Proposal__ProposalId__c).Id;
+                    if(!String.isBlank(oNewDocumentCollateInfo.Apttus_Proposal__RelatedAttachmentId__c)){
+                        oNewDocumentCollateInfo.Apttus_Proposal__RelatedAttachmentId__c = mapAttach.get(oOldDocumentCollateInfo.Apttus_Proposal__RelatedAttachmentId__c).Id;
+                    }
+                    mapNewDocumentCollateInfo.put(oOldDocumentCollateInfo.Id,oNewDocumentCollateInfo);
+                }
+            }
+            return mapNewDocumentCollateInfo;
+        }
+        return null;
+    }
+
+    //Clone Agreements
+    public static Map<id,Apttus__APTS_Agreement__c> cloneAgreements(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Apttus__APTS_Agreement__c> listOldAgreement;
+        Map<Id,Apttus__APTS_Agreement__c> mapAgreement = new Map<Id,Apttus__APTS_Agreement__c>();
+        List<Apttus__APTS_Agreement__c> listUpdateAgreemnt = new List<Apttus__APTS_Agreement__c>();
+        List<String> listAgreementFields = APTS_CloneCommonUtil.getsoqlfields('Apttus__APTS_Agreement__c');
+        String strAgreementSoql = 'select ' + String.join(listAgreementFields, ',') + ' from Apttus__APTS_Agreement__c'
+            + ' where Apttus_QPComply__RelatedProposalId__c IN :setQuoteID';
+        listOldAgreement = Database.query(strAgreementSoql);
+        if(!listOldAgreement.isEmpty()){
+            Apttus__APTS_Agreement__c oNewAgreement = new Apttus__APTS_Agreement__c();
+            for(Apttus__APTS_Agreement__c oOldAgreement : listOldAgreement){
+                oNewAgreement = oOldAgreement.clone();
+                oNewAgreement.APTS_Frame_Agreement_Number__c = APTS_CPQCommonUtil.getFrameAgreementNumber();
+                oNewAgreement.Apttus__Status_Category__c = APTS_Constants.PG_FRAME_AGREEMENT_STATUS_CATEGORY;
+                oNewAgreement.RecordTypeId = Schema.SObjectType.Apttus__APTS_Agreement__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_RECORDTYPE).getRecordTypeId();
+                oNewAgreement.Apttus_QPComply__RelatedProposalId__c = mapProposals.get(oOldAgreement.Apttus_QPComply__RelatedProposalId__c).Id;
+                oNewAgreement.APTS_Revised_From__c = oOldAgreement.Id;
+                oNewAgreement.APTS_Internal_Revision__c = mapProposals.get(oOldAgreement.Apttus_QPComply__RelatedProposalId__c).APTS_Internal_Revision__c;
+                oNewAgreement.APTS_External_Version__c = mapProposals.get(oOldAgreement.Apttus_QPComply__RelatedProposalId__c).APTS_External_Revision__c;
+                /**
+                * @jira/hpalm: HPALM-11475
+                * @owner: Karsan Prajapati
+                * @modified-date: 30th Jun 2017
+                * @desc: Skip Migration ID field while cloning Agreement.
+                **///BEG:
+                oNewAgreement.APTS_External_Id__c = null;
+                //END:
+                mapAgreement.put(oOldAgreement.Id,oNewAgreement);
+                oOldAgreement.Apttus__Status_Category__c = APTS_Constants.Quotation_Stage_Superseeded;
+                oOldAgreement.RecordTypeId = Schema.SObjectType.Apttus__APTS_Agreement__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_RECORDTYPE_SUPERSEDED).getRecordTypeId();
+                listUpdateAgreemnt.add(oOldAgreement);
+            }
+        }
+        if(!listUpdateAgreemnt.isEmpty()){
+            update listUpdateAgreemnt;
+        }
+        
+        return mapAgreement;
+    }
+
+    //Clone Agreement Line items
+    public static Map<Id,Apttus__AgreementLineItem__c> cloneALI(Map<Id,Apttus__APTS_Agreement__c> mapAgreement,Set<Id> setAgreementID,Map<Id,Apttus_Proposal__Proposal_Line_Item__c> mapClonedPLI){
+        List<Apttus__AgreementLineItem__c> listOldALI;
+        Map<Id,Apttus__AgreementLineItem__c> mapALI = new Map<Id,Apttus__AgreementLineItem__c>();
+
+        List<String> listALIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus__AgreementLineItem__c');
+        String strALIsoql = 'select ' + String.join(listALIFields, ',') + ' from Apttus__AgreementLineItem__c'
+            + ' where Apttus__AgreementId__c IN :setAgreementID';
+        listOldALI = Database.query(strALIsoql);
+        if(!listOldALI.isEmpty())
+        {
+            Apttus__AgreementLineItem__c oNewAgreement = new Apttus__AgreementLineItem__c();
+            for(Apttus__AgreementLineItem__c oOldAgreement : listOldALI)
+            {
+                oNewAgreement = oOldAgreement.clone();
+                oNewAgreement.Apttus__AgreementId__c = mapAgreement.get(oOldAgreement.Apttus__AgreementId__c).Id;
+                oNewAgreement.RecordTypeId = Schema.SObjectType.Apttus__AgreementLineItem__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_LINEITEM_RECORDTYPE_NAME).getRecordTypeId();
+
+                oOldAgreement.RecordTypeId = Schema.SObjectType.Apttus__AgreementLineItem__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_LINEITEM_RECORDTYPE_SUPERSEDED).getRecordTypeId();
+
+                if(mapClonedPLI.containsKey(oOldAgreement.APTS_RelatedProposal_LineItem__c)){
+                    oNewAgreement.APTS_RelatedProposal_LineItem__c = mapClonedPLI.get(oOldAgreement.APTS_RelatedProposal_LineItem__c).Id;
+                }
+                
+                /**
+                * @jira/hpalm: HPALM-11475
+                * @owner: Karsan Prajapati
+                * @modified-date: 30th Jun 2017
+                * @desc: Skip Migration ID field while cloning Agreement Line Item.
+                **///BEG:
+                oNewAgreement.APTS_Migration_ID__c = null;
+                //END:
+
+                mapALI.put(oOldAgreement.Id,oNewAgreement);
+            }
+            System.debug('listOldALI'+listOldALI);
+            update listOldALI;
+        }
+        
+        return mapALI;
+    }
+
+    //Clone Frame Agreement Order
+    public static Map<Id,Apttus_Config2__Order__c> cloneFAOrder(Map<Id,Apttus__APTS_Agreement__c> mapAgreement,Set<Id> setAgreementID){
+        List<Apttus_Config2__Order__c> listOldOrder;
+        Map<Id,Apttus_Config2__Order__c> mapOrder = new Map<Id,Apttus_Config2__Order__c>();
+
+        List<String> listOrderFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__Order__c');
+        String strOrdersoql = 'select ' + String.join(listOrderFields, ',') + ' from Apttus_Config2__Order__c'
+            + ' where Apttus_CMConfig__AgreementId__c IN :setAgreementID';
+        listOldOrder = Database.query(strOrdersoql);
+        System.debug('listOldOrder :'+listOldOrder);
+        if(!listOldOrder.isEmpty())
+        {
+            System.debug('listOldOrder :'+listOldOrder);
+            Apttus_Config2__Order__c oNewOrder = new Apttus_Config2__Order__c();
+            for(Apttus_Config2__Order__c oOldOrder : listOldOrder)
+            {
+                oNewOrder = oOldOrder.clone();
+                oNewOrder.Apttus_CMConfig__AgreementId__c = mapAgreement.get(oOldOrder.Apttus_CMConfig__AgreementId__c).Id;
+                oNewOrder.RecordTypeId = Schema.SObjectType.Apttus_Config2__Order__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_ORDER_RECORDTYPE).getRecordTypeId();
+                oOldOrder.RecordTypeId = Schema.SObjectType.Apttus_Config2__Order__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_ORDER_RECORDTYPE_SUPERSEDED).getRecordTypeId();
+                /**
+                * @jira/hpalm: HPALM-11475
+                * @owner: Karsan Prajapati
+                * @modified-date: 30th Jun 2017
+                * @desc: Skip Migration ID field while cloning Order.
+                **///BEG:
+                oOldOrder.APTS_Migration_ID__c = null;
+                //END:
+                mapOrder.put(oOldOrder.Id,oNewOrder);
+            }
+            update listOldOrder;
+            System.debug('listOldOrder :'+listOldOrder);
+        }
+        
+        return mapOrder;
+    }
+
+    //Clone FA Order Line items
+    public static Map<Id,Apttus_Config2__OrderLineItem__c> cloneFAOLI(Map<Id,Apttus_Config2__Order__c> mapOrder,Set<Id> setOrderID,Map<Id,Apttus__AgreementLineItem__c> mapAgreementLI){
+        List<Apttus_Config2__OrderLineItem__c> listOldOLI;
+        Map<Id,Apttus_Config2__OrderLineItem__c> mapOLI = new Map<Id,Apttus_Config2__OrderLineItem__c>();
+
+        List<String> listOLIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__OrderLineItem__c');
+        String strOLIsoql = 'select ' + String.join(listOLIFields, ',') + ' from Apttus_Config2__OrderLineItem__c'
+            + ' where Apttus_Config2__OrderId__c IN :setOrderID';
+        listOldOLI = Database.query(strOLIsoql);
+        System.debug('mapAgreementLI :'+mapAgreementLI);
+        System.debug('listOldOLI :'+listOldOLI);
+        System.debug('mapOrder :'+mapOrder);
+        if(!listOldOLI.isEmpty())
+        {
+            Apttus_Config2__OrderLineItem__c oNewOrder = new Apttus_Config2__OrderLineItem__c();
+            for(Apttus_Config2__OrderLineItem__c oOldOrder : listOldOLI)
+            {
+                oNewOrder = oOldOrder.clone();
+                oNewOrder.Apttus_Config2__OrderId__c = mapOrder.get(oOldOrder.Apttus_Config2__OrderId__c).Id;
+                oNewOrder.Apttus_CMConfig__AgreementId__c = mapOrder.get(oOldOrder.Apttus_Config2__OrderId__c).Apttus_CMConfig__AgreementId__c;
+                oNewOrder.APTS_FA_Agreement_Line_Item__c = mapAgreementLI.get(oOldOrder.APTS_FA_Agreement_Line_Item__c).Id;
+                oNewOrder.RecordTypeId = Schema.SObjectType.Apttus_Config2__OrderLineItem__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_ORDER_LINEITEM_RECORDTYPE).getRecordTypeId();
+                oOldOrder.RecordTypeId = Schema.SObjectType.Apttus_Config2__OrderLineItem__c.getRecordTypeInfosByName().get(APTS_Constants.PG_FRAME_AGREEMENT_ORDER_LINEITEM_RECORDTYPE_SUPERSEDED).getRecordTypeId();
+                mapOLI.put(oOldOrder.Id,oNewOrder);
+                System.debug('mapOLI :'+mapOLI);
+            }
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false; //HPALM-14487, 12842: SOQL 101: To avoid calling APTS_OrderLineItemTrigger on Quotation Revision - Added by Shikha Dave 
+            update listOldOLI;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = true; //HPALM-14487, 12842: SOQL 101: To start calling APTS_OrderLineItemTrigger after update of old order line item on Quotation Revision - Added by Shikha Dave 
+            System.debug('listOldOLI :'+listOldOLI);
+        }
+        
+        return mapOLI;
+    }
+
+    //Clone Order
+    public static Map<Id,Apttus_Config2__Order__c> cloneorder(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        List<Apttus_Config2__Order__c> listOldOrder;
+        Map<Id,Apttus_Config2__Order__c> mapOrder = new Map<Id,Apttus_Config2__Order__c>();
+
+        List<String> listOrderFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__Order__c');
+        String strOrderSoql = 'select ' + String.join(listOrderFields, ',') + ' from Apttus_Config2__Order__c'
+            + ' where Apttus_QPConfig__ProposalId__c IN :setQuoteID';
+        listOldOrder = Database.query(strOrderSoql);
+        if(!listOldOrder.isEmpty()){
+            Apttus_Config2__Order__c oNewOrder = new Apttus_Config2__Order__c();
+            for(Apttus_Config2__Order__c oOldOrder : listOldOrder){
+                oNewOrder = oOldOrder.clone();
+                oNewOrder.Apttus_QPConfig__ProposalId__c = mapProposals.get(oOldOrder.Apttus_QPConfig__ProposalId__c).Id;
+                /**
+                * @jira/hpalm: HPALM-11475
+                * @owner: Karsan Prajapati
+                * @modified-date: 30th Jun 2017
+                * @desc: Skip Migration ID field while cloning Order.
+                **///BEG:
+                oNewOrder.APTS_Migration_ID__c = null;
+                //END:
+                mapOrder.put(oOldOrder.Id,oNewOrder);
+            }
+        }
+
+        return mapOrder;
+    }
+
+    //Clone Order Line items
+    public static Map<Id,Apttus_Config2__OrderLineItem__c> cloneOLI(Map<Id,Apttus_Config2__Order__c> mapOrder,Set<Id> setOrderID){
+        List<Apttus_Config2__OrderLineItem__c> listOldOLI;
+        Map<Id,Apttus_Config2__OrderLineItem__c> mapOLI = new Map<Id,Apttus_Config2__OrderLineItem__c>();
+
+        List<String> listOLIFields = APTS_CloneCommonUtil.getsoqlfields('Apttus_Config2__OrderLineItem__c');
+        String strOLIsoql = 'select ' + String.join(listOLIFields, ',') + ' from Apttus_Config2__OrderLineItem__c'
+            + ' where Apttus_Config2__OrderId__c IN :setOrderID';
+        listOldOLI = Database.query(strOLIsoql);
+        if(!listOldOLI.isEmpty())
+        {
+            Apttus_Config2__OrderLineItem__c oNewOrder = new Apttus_Config2__OrderLineItem__c();
+            for(Apttus_Config2__OrderLineItem__c oOldOrder : listOldOLI)
+            {
+                oNewOrder = oOldOrder.clone();
+                oNewOrder.Apttus_Config2__OrderId__c = mapOrder.get(oOldOrder.Apttus_Config2__OrderId__c).Id;
+                mapOLI.put(oOldOrder.Id,oNewOrder);
+            }
+        }
+        
+        return mapOLI;
+    }
+
+    
+    //Clone Quote team members
+    public static Map<Id,Quote_Team_Member__c> cloneQuoteteammembers(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id>  
+        setQuoteID){
+        
+        //Added by shikha dave 9938
+        /**Start Here**/
+        Set<Id> setAllQuoteID= new Set<Id>() ;
+        List<Quote_Team_Member__c> listNewquoteTM = new List<Quote_Team_Member__c>();
+        List<Quote_Team_Member__c> listquoteTM;
+        List<Quote_Team_Member__c> listtoClonequoteTM = new List<Quote_Team_Member__c>();
+        Set<Id> setExistUserId = new Set<Id>();
+        List<Quote_Team_Member__c> listoldquoteTM = new List<Quote_Team_Member__c>();
+
+        for(Apttus_Proposal__Proposal__c oProp : mapProposals.values()){
+            setAllQuoteID.add(oProp.Id);
+        }
+        setAllQuoteID.addAll(setQuoteID);
+        /**End Here**/
+        
+        Map<Id,Quote_Team_Member__c> mapQuoteTM = new Map<Id,Quote_Team_Member__c>();
+        
+        
+        List<String> listQTMFields = APTS_CloneCommonUtil.getsoqlfields('Quote_Team_Member__c');
+        String strquoteTMsoql = 'select ' + String.join(listQTMFields, ',') + ' from Quote_Team_Member__c'
+            + ' where Quotation__c IN :setAllQuoteID';
+            System.debug('[cloneQuoteteammembers] mapProposals: ' + mapProposals.keySet());
+            System.debug('[cloneQuoteteammembers] mapProposals: ' + mapProposals);
+            System.debug('[cloneQuoteteammembers] setAllQuoteID: ' + setAllQuoteID);
+        listquoteTM = Database.query(strquoteTMsoql);
+        if(!listquoteTM.isEmpty())
+        {
+            //Added by shikha dave 9938
+            /**Start Here**/
+            for(Quote_Team_Member__c objQTM: listquoteTM){
+                for(Apttus_Proposal__Proposal__c oProp : mapProposals.values()){
+                    if(objQTM.Quotation__c == oProp.Id){
+                        listNewquoteTM.add(objQTM);
+                    }else{
+                        listoldquoteTM.add(objQTM);
+                    }
+                }
+            }
+            }
+            if(listNewquoteTM.size()>0){
+                for(Quote_Team_Member__c oQTM : listoldquoteTM){
+                    for(Quote_Team_Member__c oNewQTM : listNewquoteTM){
+                        if(oQTM.User__c == oNewQTM.User__c){
+                            setExistUserId.add(oNewQTM.User__c);
+                            break;
+                        }
+                    }
+                    if(!setExistUserId.contains(oQTM.User__c)){
+                        listtoClonequoteTM.add(oQTM);
+                    }
+                } 
+                if(listtoClonequoteTM.size() > 0){
+                    for(Quote_Team_Member__c oOldQuoteTM : listtoClonequoteTM)
+            {
+                Quote_Team_Member__c oNewQuoteTM1 = new Quote_Team_Member__c();
+                oNewQuoteTM1 = oOldQuoteTM.clone();
+                oNewQuoteTM1.Quotation__c = mapProposals.get(oOldQuoteTM.Quotation__c).Id;
+                System.debug(LoggingLevel.ERROR,'oNewQuoteTM  :' + oNewQuoteTM1);
+                mapQuoteTM.put(oOldQuoteTM.Id,oNewQuoteTM1);
+                    }                            
+                }
+            }else{
+                /**End Here**/
+                for(Quote_Team_Member__c oOldQuoteTM : listquoteTM)
+                {
+                    Quote_Team_Member__c oNewQuoteTM1 = new Quote_Team_Member__c();
+    
+                    oNewQuoteTM1 = oOldQuoteTM.clone();
+                    oNewQuoteTM1.Quotation__c = mapProposals.get(oOldQuoteTM.Quotation__c).Id;
+                    System.debug(LoggingLevel.ERROR,'oNewQuoteTM  :' + oNewQuoteTM1);
+                    mapQuoteTM.put(oOldQuoteTM.Id,oNewQuoteTM1);
+                }
+            }
+        
+        
+        return mapQuoteTM;
+    }
+
+    //Clone Milestone Billing Plan records
+    public static Map<Id,APTS_Milestone_Billing_Plan__c> cloneMilestoneBP(Map<Id,Apttus_Proposal__Proposal__c> mapProposals, Set<Id> setQuoteID){
+        Map<Id,APTS_Milestone_Billing_Plan__c> mapMilestoneBP = new Map<Id,APTS_Milestone_Billing_Plan__c>();
+        List<APTS_Milestone_Billing_Plan__c> listOldMilestoneBP;
+        
+        List<String> listMilestoneBPFields = APTS_CloneCommonUtil.getsoqlfields('APTS_Milestone_Billing_Plan__c');
+        String strMilestoneBPsoql = 'select ' + String.join(listMilestoneBPFields, ',') + ' from APTS_Milestone_Billing_Plan__c'
+            + ' where APTS_Quotation__c IN :setQuoteID';
+        listOldMilestoneBP = Database.query(strMilestoneBPsoql);
+        if(!listOldMilestoneBP.isEmpty())
+        {
+            for(APTS_Milestone_Billing_Plan__c oOldMilestoneBP : listOldMilestoneBP)
+            {
+                APTS_Milestone_Billing_Plan__c oNewMilestoneBP = new APTS_Milestone_Billing_Plan__c();
+                oNewMilestoneBP = oOldMilestoneBP.clone();
+                oNewMilestoneBP.APTS_Quotation__c = mapProposals.get(oOldMilestoneBP.APTS_Quotation__c).Id;
+                mapMilestoneBP.put(oOldMilestoneBP.Id,oNewMilestoneBP);
+            }
+        }
+        
+        return mapMilestoneBP;
+    }
+    
+    //Create list of fields to query for an object
+    public static List<String> getsoqlfields(String oObjectName){
+        List<String> listFields = new List<String>(Schema.getGlobalDescribe().get(oObjectname).getDescribe().fields.getMap().keySet());
+        return listFields;
+
+    }
+
+    //Fetch Fileds to be Nullified from Custom Field Set
+    public static List<Schema.FieldSetMember> findFieldSet(String fieldstoNullify){
+        List<Schema.FieldSetMember> nullifyFSM = new List<Schema.FieldSetMember>();
+        
+        if (SobjectType.Opportunity.FieldSets.getMap().containsKey(fieldstoNullify)&& SobjectType.Opportunity.FieldSets.getMap().get(fieldstoNullify).getFields() != null ){
+            
+                nullifyFSM = SobjectType.Opportunity.FieldSets.getMap().get(fieldstoNullify).getFields();
+            }
+        
+        return nullifyFSM;
+    }
+
+    /**
+     * @Description Clones Wholesaler and Wholesaler Line Items after proposal is clonned
+     * @param:  Product_Configuration__c's ID, Apttus_Proposal__Proposal__c's ID,Apttus_Proposal__Proposal__c's APTS_Cloned_From_ID__c
+     * @return: N/A
+     */
+    public static Boolean cloneWholesalerRecordsForProposal(Apttus_Config2__ProductConfiguration__c currentConfig) {
+        Boolean cloned = false;
+
+        if (currentConfig.Apttus_Config2__BusinessObjectType__c != APTS_Constants.BUSINESS_OBJECT_TYPE_PROPOSAL) {
+            System.debug('Cloning only for proposal');
+            return cloned;
+        }
+
+        if (currentConfig.Apttus_QPConfig__Proposald__r.APTS_Cloned_From_ID__c == null
+                || !currentConfig.Apttus_QPConfig__Proposald__r.Has_Cloned_Wholesaler__c) {
+            System.debug('Not aplicable. - quotaiton must be cloned and has wholesaler.');
+            return cloned;
+        }
+
+        Id clonedFromId = currentConfig.Apttus_QPConfig__Proposald__r.APTS_Cloned_From_ID__c;
+        Apttus_Proposal__Proposal__c originalQuotation;
+        try {
+         originalQuotation = [SELECT Id, Wholesaler_Account__c FROM Apttus_Proposal__Proposal__c WHERE ID =: clonedFromId];
+        } catch (QueryException e) {
+            System.debug('Original quotation does not exist.');
+            return cloned;
+        }
+
+        String wliQuery = String.format('SELECT {0} FROM {1}', new String[] {String.join(new List<String>(Wholesaler_Line_Item__c.SObjectType.getDescribe().fields.getMap().keySet()), ','), 'Wholesaler_Line_Items__r'});
+        String wholesalerId = originalQuotation.Wholesaler_Account__c;
+        String wholesalerQuery = String.format('SELECT {0}, ({2}) FROM {1} WHERE Id =: ', new String[] {String.join(new List<String>(Wholesaler__c.SObjectType.getDescribe().fields.getMap().keySet()), ','), 'Wholesaler__c', wliQuery});
+        wholesalerQuery  += 'wholesalerId LIMIT 1';
+        System.debug('Query:::'+wholesalerQuery);
+
+        List<Wholesaler__c> wholesalerList = Database.query(wholesalerQuery);
+        Wholesaler__c wholesaler;
+        if (!wholesalerList.isEmpty()) {
+          wholesaler = wholesalerList.get(0);
+        }
+
+        if (wholesaler != null) {
+            Wholesaler__c clonnedWholesaler = wholesaler.clone(false, true, false, false);
+            clonnedWholesaler.Quote_Proposal__c = Id.valueof(currentConfig.Apttus_Config2__BusinessObjectId__c);
+            
+            try {
+                insert clonnedWholesaler;
+            } catch(DmlException e) {
+                System.debug('***clonnedWholesaler DML failed:'+e.getMessage());
+                return cloned;
+            }
+
+            List<Wholesaler_Line_Item__c> clonnedWliList = new List<Wholesaler_Line_Item__c>();
+            for (Wholesaler_Line_Item__c wli: wholesaler.Wholesaler_Line_Items__r) {
+                Wholesaler_Line_Item__c clonnedWli = wli.clone(false, true, false, false);
+                clonnedWli.Product_Configuration__c = currentConfig.Id;
+                clonnedWli.Wholesaler__c = clonnedWholesaler.Id;
+                clonnedWliList.add(clonnedWli);
+            }
+
+            if (!clonnedWliList.isEmpty()) {
+                try {
+                    insert clonnedWliList;
+                } catch(DmlException e) {
+                    System.debug('***clonnedWholesaler LI DML failed:'+e.getMessage());
+                    return cloned;
+                }
+
+                currentConfig.Apttus_QPConfig__Proposald__r.Wholesaler_Account__c = clonnedWholesaler.Id;
+                currentConfig.Apttus_QPConfig__Proposald__r.Has_Cloned_Wholesaler__c = false;
+                try {
+                    APTS_ProcessorControl.isByPassTriggerOnDML = true;
+                    update currentConfig.Apttus_QPConfig__Proposald__r;
+                    cloned = true;
+                } catch(DmlException e) {
+                    System.debug('***update quote DML failed:'+e.getMessage());
+                }
+            }
+        }
+
+        return cloned;
+    }
+
+    //Wrapper class for getting selected line items and setting it
+    public class APTS_Wrapper_Copy_Line_Items {
+        
+        public Apttus_Config2__LineItem__c objOldLineItems {get; set;}
+        public Apttus_Config2__LineItem__c objNewLineItems {get; set;}
+        
+        public APTS_Wrapper_Copy_Line_Items(Apttus_Config2__LineItem__c objOldLineItem, Apttus_Config2__LineItem__c objNewLineItem) {
+            
+            this.objOldLineItems = objOldLineItem;
+            this.objNewLineItems = objNewLineItem;
+        }
+    }
+}

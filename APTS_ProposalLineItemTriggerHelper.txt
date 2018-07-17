@@ -1,0 +1,294 @@
+/*************************************************************
+@Name: APTS_ProposalLineItemTriggerHelper
+@Author: Meet Desai (Apttus)
+@CreateDate: 6 Oct, 2016
+@Description: Helper class to Perform operations on Proposal Line Item object.
+@UsedBy: APTS_ProposalLineItemTriggerHandler
+******************************************************************
+@ModifiedBy:  Mukesh Aswani (Apttus)
+@ModifiedDate: 17 Oct,2016
+@ChangeDescription: Added copyFieldsToOrderLineItem method
+******************************************************************
+@ModifiedBy:  Meet Desai (Apttus)
+@ModifiedDate: 21 Oct,2016
+@ChangeDescription: Added deleteLineItemCompetitor method to delete Line Item Competitors
+*****************************************************************
+@ModifiedBy:  Juhi Rawal (Apttus)
+@ModifiedDate: 22 June,2017
+@ChangeDescription: Updated updateLIFields() method for HPALM - 10980
+*****************************************************************
+@ModifiedBy:  Karsan Prajapati (Apttus)
+@ModifiedDate: 11 Dec, 2017
+@ChangeDescription: Updated copyFieldsToOrderLineItem() method for HPALM-16370.
+
+******************************************************************/
+
+public class APTS_ProposalLineItemTriggerHelper {
+    //To insert Line Item Competitor when Proposal Line Item is inserted - Added by Meet Desai
+    public static void OnAfterInsertQuotationCompToLIComp(List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItems){
+        List<APTS_Competitor__c> toInsertComptrsList = new List<APTS_Competitor__c>();
+        Set<ID> setQuoteId = new Set<ID>();
+        
+        for(Apttus_Proposal__Proposal_Line_Item__c quoteLineItem : listProposalLineItems){
+            setQuoteId.add(quoteLineItem.Apttus_Proposal__Proposal__c);
+        }
+        
+        List<Competitor_CQP__c> listCompetitorCQP = [Select ID, Name, Account__c, APTS_ABB_Ranking__c, APTS_Bad_Track_Record__c, APTS_Customer_Relationship__c, Description__c, APTS_Estimated_Sales_Price__c, APTS_Installed_Base__c, APTS_Link__c, APTS_Opportunity_Competitor_ID__c, APTS_Packaging_Solution__c, APTS_Percentage__c, APTS_Price_Leadership__c, APTS_Pricing_Strategy__c, APTS_Quotation__c, APTS_Source_of_Information__c, APTS_Supplementary_Services__c, APTS_Technical_Deviation__c, APTS_Technology_Leadership__c, APTS_Winning_Company__c from Competitor_CQP__c where Quote_Proposal__c in :setQuoteId];
+        if (!listCompetitorCQP.isEmpty()){
+            for(Apttus_Proposal__Proposal_Line_Item__c quoteLineItem : listProposalLineItems){
+                for (Competitor_CQP__c competitorCQP : listCompetitorCQP){
+                   APTS_Competitor__c cmp = new APTS_Competitor__c();
+                   cmp.APTS_Competitor__c = competitorCQP.Account__c;
+                   cmp.APTS_Quotation_Competitor__c = competitorCQP.ID;
+                   cmp.APTS_Quotation_Line_Item__c = quoteLineItem.ID;
+                   cmp.APTS_ABB_Ranking__c = competitorCQP.APTS_ABB_Ranking__c;
+                   cmp.APTS_Bad_Track_Record__c = competitorCQP.APTS_Bad_Track_Record__c;
+                   cmp.APTS_Customer_Relationship__c = competitorCQP.APTS_Customer_Relationship__c;
+                   cmp.APTS_Description__c = competitorCQP.Description__c;
+                   //cmp.APTS_Estimated_Sales_Price__c = competitorCQP.APTS_Estimated_Sales_Price__c;
+                   cmp.APTS_Installed_Base__c = competitorCQP.APTS_Installed_Base__c;
+                   //cmp.APTS_Link__c = competitorCQP.APTS_Link__c;
+                   cmp.APTS_Opportunity_Competitor_ID__c = competitorCQP.APTS_Opportunity_Competitor_ID__c;
+                   cmp.APTS_Packaging_Solution__c = competitorCQP.APTS_Packaging_Solution__c;
+                   cmp.APTS_Percentage__c = competitorCQP.APTS_Percentage__c;
+                   cmp.APTS_Price_Leadership__c = competitorCQP.APTS_Price_Leadership__c;
+                   cmp.APTS_Pricing_Strategy__c = competitorCQP.APTS_Pricing_Strategy__c;
+                   cmp.APTS_Source_of_Information__c = competitorCQP.APTS_Source_of_Information__c;
+                   cmp.APTS_Supplementary_Services__c = competitorCQP.APTS_Supplementary_Services__c;
+                   cmp.APTS_Technical_Deviation__c = competitorCQP.APTS_Technical_Deviation__c;
+                   cmp.APTS_Technology_Leadership__c = competitorCQP.APTS_Technology_Leadership__c;
+                   cmp.APTS_Winning_Company__c = competitorCQP.APTS_Winning_Company__c;
+                   toInsertComptrsList.add(cmp);
+                }
+            }
+        }
+        if (!toInsertComptrsList.isEmpty()){
+            APTS_ProposalLineItemTriggerHandler.ExecuteTriggers = false;
+            insert toInsertComptrsList;
+        }
+    }
+
+    //Added by Mukesh to copy fields from Quotation Line Item to Order Line Item
+    public static void copyFieldsToOrderLineItem(Map<Id,Apttus_Proposal__Proposal_Line_Item__c> pLIMap){
+     
+        Map<String, Map<String, Schema.SObjectField>> sObjectAndFields = APTS_OrderCreationUtility.getAllSObjectFieldsBySObjectName(new Set<String>{
+            'Apttus_Config2__OrderLineItem__c', 'Apttus_Proposal__Proposal_Line_Item__c'});
+
+        Map<String, Schema.SObjectField> orderLineItemFields = sObjectAndFields.get('Apttus_Config2__OrderLineItem__c');
+        Map<String, Schema.SObjectField> orderLineItemSourceFields = sObjectAndFields.get('Apttus_Proposal__Proposal_Line_Item__c');
+        List<Apttus_Config2__OrderLineItem__c> listUpdateOrderLI= new List<Apttus_Config2__OrderLineItem__c>();
+
+        Map<Id,Apttus_Config2__OrderLineItem__c>  pLIIdToOLIMAp = new Map<Id,Apttus_Config2__OrderLineItem__c>();
+
+        List<Apttus_Config2__OrderLineItem__c> listOrderLI = [Select ID,Apttus_QPConfig__ProposalLineItemId__c from Apttus_Config2__OrderLineItem__c WHERE Apttus_QPConfig__ProposalLineItemId__c IN:  pLIMap.keySet()];
+ 
+        if(listOrderLI!=null && !listOrderLI.isEmpty()){
+
+            for(Apttus_Config2__OrderLineItem__c orderLI : listOrderLI){
+                pLIIdToOLIMAp.put(orderLI.Apttus_QPConfig__ProposalLineItemId__c,orderLI);
+
+            }
+
+            for(ID pLIID :pLIIdToOLIMAp.keySet()){
+
+                Apttus_Config2__OrderLineItem__c orderLineItem =pLIIdToOLIMAp.get(pLIID);
+                Apttus_Proposal__Proposal_Line_Item__c lineItem = pLIMap.get(pLIID);
+
+                String copy = '^^^ Matching API fields copied from QPLI ' + lineItem.Id + ' to new OLI: ';
+                String errorFields = 'Order Line Item error fields:';
+                for(String sourceAPI : orderLineItemSourceFields.keySet()){
+                    System.debug('sourceAPI '+ sourceAPI);
+                    String targetAPI = APTS_OrderCreationUtility.getTargetApttusFieldAPIName(sourceAPI);
+                    try{
+                        /**
+                        * @jira/hpalm: HPALM-16370
+                        * @owner: Karsan Prajapati
+                        * @modified-date: 10th Aug 2017
+                        * @desc: Migration Problem. Compare Source and Taget API Name using equalsIgnoreCase method to fix defect.
+                        **/
+                        //BEG:HPALM-16370
+                        if(!sourceAPI.equalsIgnoreCase('recordtypeid') && !sourceAPI.equalsIgnoreCase('createdbyid') && !sourceAPI.equalsIgnoreCase('createddate') && !sourceAPI.equalsIgnoreCase('lastmodifieddate') && !sourceAPI.equalsIgnoreCase('lastmodifiedbyid') && !sourceAPI.equalsIgnoreCase('apttus_qpconfig__attributevalueid__c') &&  !sourceAPI.equalsIgnoreCase('apttus_qpconfig__linestatus__c') && lineItem.get(sourceAPI) != null && orderLineItemFields.containsKey(targetAPI.toLowerCase())&& !targetAPI.equalsIgnoreCase('Id')){
+                           
+                               //Added validation to check the type matches
+                                orderLineItem.put(targetAPI, lineItem.get(sourceAPI));
+                                copy += targetAPI + '=' + orderLineItem.get(targetAPI) + ', ';
+                              
+                        }else{
+                            errorFields += '\n' + targetAPI;
+                        }
+                        //END:HPALM-16370
+                        
+                    }catch(Exception ex){
+                        errorFields += '\n' + targetAPI;  
+                    }
+                }
+                copy.removeEnd(', ');
+                System.debug('copy='+copy);
+                
+                
+                orderLineItem.Apttus_Config2__ProductId__c  =lineItem.Apttus_Proposal__Product__c;
+                orderLineItem.Apttus_Config2__Quantity__c=lineItem.Apttus_QPConfig__Quantity2__c;
+                listUpdateOrderLI.add(orderLineItem);
+
+            }
+
+            if(!listUpdateOrderLI.isEmpty()){
+              APTS_OrderLineItemTriggerHandler.ExecuteTriggers=false;
+              update listUpdateOrderLI;
+            }
+
+
+
+        }
+    }
+
+    //To delete Line Item Competitor when Proposal Line Item is deleted - Added by Meet Desai
+    public static void deleteLineItemCompetitor(List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItems){
+      List<APTS_Competitor__c> toDeleteComptrsList = new List<APTS_Competitor__c>();
+      Set<ID> setProposalLineItemId = new Set<ID>();
+
+      for (Apttus_Proposal__Proposal_Line_Item__c proposalLineItem : listProposalLineItems){
+        setProposalLineItemId.add(proposalLineItem.ID);
+      }
+
+      List<APTS_Competitor__c> listLineItemCompetitor = [Select ID, Name from APTS_Competitor__c where APTS_Quotation_Line_Item__c in :setProposalLineItemId];
+      for (APTS_Competitor__c lineItemCompetitor : listLineItemCompetitor){
+        APTS_Competitor__c comp = new APTS_Competitor__c();
+        comp.ID = lineItemCompetitor.ID;
+        toDeleteComptrsList.add(comp);
+      }
+
+      if (!toDeleteComptrsList.isEmpty()){
+          APTS_ProposalLineItemTriggerHandler.ExecuteTriggers = false;
+          delete toDeleteComptrsList;
+      }
+    }
+
+    //To delete Order Line Item when Proposal Line Item is deleted - Added by Shikha Dave
+    public static void deleteOrderLineItem(List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItems){
+      List<Apttus_Config2__OrderLineItem__c> toDeleteOrderLIList = new List<Apttus_Config2__OrderLineItem__c>();
+      Set<ID> setProposalLineItemId = new Set<ID>();
+
+      for (Apttus_Proposal__Proposal_Line_Item__c proposalLineItem : listProposalLineItems){
+        setProposalLineItemId.add(proposalLineItem.ID);
+      }
+
+      List<Apttus_Config2__OrderLineItem__c> listOrderLineItem = [Select ID, Name from Apttus_Config2__OrderLineItem__c where Apttus_Config2__Status__c =: APTS_Constants.ORDER_LINEITEM_STATUS_NOT_ORDERED AND Apttus_QPConfig__ProposalLineItemId__c in :setProposalLineItemId];
+      for (Apttus_Config2__OrderLineItem__c orderLineItem : listOrderLineItem){
+        toDeleteOrderLIList.add(orderLineItem);
+      }
+
+      if (!toDeleteOrderLIList.isEmpty()){
+          APTS_ProposalLineItemTriggerHandler.ExecuteTriggers = false;
+          delete toDeleteOrderLIList;
+      }
+    }
+
+    //To update Proposal Product Lookup based on Proposal Line Items[Added by Karsan Prajapati]
+    public static void updateProposalGroupLookup(List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItems){
+      List<Apttus_Proposal__Proposal__c> listProposals = new List<Apttus_Proposal__Proposal__c>();
+      try{
+        Set<ID> setProductID = new Set<ID>();
+
+        for(Apttus_Proposal__Proposal_Line_Item__c oProposalLI : listProposalLineItems){
+          if(oProposalLI.APTS_Primary_Product_Group__c && String.isNotBlank(oProposalLI.Apttus_Proposal__Product__c)){
+            setProductID.add(oProposalLI.Apttus_Proposal__Product__c);
+          }
+        }
+
+        if(!setProductID.isEmpty()){
+          Map<ID, Product2> mapProducts = new Map<ID, Product2>([SELECT Id, Name, Related_Product_Group__c FROM Product2 WHERE Id IN :setProductID AND Related_Product_Group__c != NULL AND Related_Product_Group__r.Name != NULL]);
+          if(!mapProducts.isEmpty()){
+
+            
+            Set<ID> setProposalID = new Set<ID>();
+
+            for(Apttus_Proposal__Proposal_Line_Item__c oProposalLI : listProposalLineItems){
+              if(oProposalLI.APTS_Primary_Product_Group__c && String.isNotBlank(oProposalLI.Apttus_Proposal__Product__c) && !setProposalID.contains(oProposalLI.Apttus_Proposal__Proposal__c)&& (mapProducts.containsKey(oProposalLI.Apttus_Proposal__Product__c))){
+                
+                  listProposals.add(new Apttus_Proposal__Proposal__c(
+                      Id = oProposalLI.Apttus_Proposal__Proposal__c,
+                      APTS_Primary_Product_Group__c = ((Product2)mapProducts.get(oProposalLI.Apttus_Proposal__Product__c)).Related_Product_Group__c
+                    ));
+                  setProposalID.add(oProposalLI.Apttus_Proposal__Proposal__c);
+                
+              }
+            }
+
+            if(!listProposals.isEmpty()){
+              APTS_ProposalTriggerHandler.ExecuteTriggers=false;
+              update listProposals;
+            }
+          }
+        }
+      }catch(DmlException ex){
+        listProposals[0].addError(ex.getDmlMessage(0));
+      }catch(Exception e){
+       throw e; 
+      }
+    }
+
+
+
+      //Added by Mukesh to copy status from Quotation Line Item to cart Line Item
+      //Updated method name from old to updateLIFields and called it from before update rather than after update.
+      //This method will updated PLI and LI Probability as well as Status based on PLI status  [By Juhi Rawal, 22nd June 2017 for HPALM - 10980] 
+      /*Modified By : Juhi Rawal
+        Modified On : 12th Oct, 2017
+        Description: HPALM #14086 : To sync Quotation Line Item status with Child Cart Line Item */
+    public static void updateLIFields(Map<Id,Apttus_Proposal__Proposal_Line_Item__c> pLIMap){
+
+      Map<Id,Apttus_Proposal__Proposal_Line_Item__c> cartLItoPropLIMap = new Map<Id,Apttus_Proposal__Proposal_Line_Item__c>();
+      Set<Id> setQuotationId = new Set<Id>();
+      final Set<String> validPLIStatus = new Set<String>{APTS_Constants.PROPOSALLI_LINE_STATUS_WON,APTS_Constants.PROPOSALLI_LINE_STATUS_LOST,APTS_Constants.PROPOSALLI_LINE_STATUS_CANCELLED,APTS_Constants.PROPOSALLI_LINE_STATUS_LOST_WO_ABB_BID};
+      for(Apttus_Proposal__Proposal_Line_Item__c propLineItem : pLIMap.values()){
+        setQuotationId.add(propLineItem.Apttus_Proposal__Proposal__c);
+        if(propLineItem.Apttus_QPConfig__DerivedFromId__c!=null ){
+          cartLItoPropLIMap.put(propLineItem.Apttus_QPConfig__DerivedFromId__c, propLineItem);  
+        } 
+        if(APTS_Constants.PROPOSALLI_LINE_STATUS_WON.equals(propLineItem.Apttus_QPConfig__LineStatus__c)){ 
+            propLineItem.APTS_Probability__c = 100;
+        } else if (validPLIStatus.contains(propLineItem.Apttus_QPConfig__LineStatus__c)){
+            propLineItem.APTS_Probability__c = 0;
+        }        
+      }
+
+      List<Apttus_Config2__LineItem__c> listCartLI= new List<Apttus_Config2__LineItem__c> ();
+
+      //BEG: Added by Juhi Rawal on 12th Oct,2017 for HPALM-14086
+      Map<Id,Apttus_Config2__LineItem__c> mapLineItems = new Map<Id,Apttus_Config2__LineItem__c>([Select Id,Apttus_Config2__CollaborationRequestId__c,Apttus_Config2__ConfigurationId__r.Apttus_Config2__BusinessObjectType__c,Apttus_Config2__ConfigurationId__r.Apttus_Config2__CollaborationRequestId__c,Apttus_Config2__CollaborationParentLineNumber__c,Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c,Apttus_Config2__LineNumber__c from Apttus_Config2__LineItem__c where Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c IN: setQuotationId]);
+      //END: Added by Juhi Rawal on 12th Oct,2017 for HPALM-14086
+      
+      for(Id cartLIId :cartLItoPropLIMap.keySet()){
+        //Commented below code and used Map to get Parent Line Item [HPALM-14086]
+        //Apttus_Config2__LineItem__c cartLI = new Apttus_Config2__LineItem__c();
+        //cartLI.Id=cartLIId;
+        Apttus_Config2__LineItem__c parentCartLI = mapLineItems.get(cartLIId);
+        String propLineItemStatus = cartLItoPropLIMap.get(cartLIId).Apttus_QPConfig__LineStatus__c;
+        if(validPLIStatus.contains(propLineItemStatus)){
+          if(propLineItemStatus == APTS_Constants.PROPOSALLI_LINE_STATUS_WON){
+            parentCartLI.APTS_Probability__c = 100;
+          } else{
+            parentCartLI.APTS_Probability__c = 0;
+          }
+          parentCartLI.Apttus_Config2__LineStatus__c =  cartLItoPropLIMap.get(cartLIId).Apttus_QPConfig__LineStatus__c;
+          listCartLI.add(parentCartLI);
+
+          //BEG: Added by Juhi Rawal on 12th Oct,2017 for HPALM-14086
+          for(Apttus_Config2__LineItem__c oLI : mapLineItems.values()){
+            if(oLI.Apttus_Config2__ConfigurationId__r.Apttus_Config2__BusinessObjectType__c == APTS_Constants.BUSINESS_OBJECT_TYPE_CR && oLI.Apttus_Config2__ConfigurationId__r.Apttus_Config2__CollaborationRequestId__c == parentCartLI.Apttus_Config2__CollaborationRequestId__c && oLI.Apttus_Config2__CollaborationParentLineNumber__c == parentCartLI.Apttus_Config2__LineNumber__c && oLI.Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c == parentCartLI.Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c){
+                oLI.Apttus_Config2__LineStatus__c = parentCartLI.Apttus_Config2__LineStatus__c;
+                listCartLI.add(oLI);
+                break;
+            }
+          }
+          //END: Added by Juhi Rawal on 12th Oct,2017 for HPALM-14086
+        }     
+      } 
+
+      if(!listCartLI.isEmpty()){
+        update listCartLI;
+      }
+
+    }
+}

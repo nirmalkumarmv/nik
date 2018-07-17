@@ -1,0 +1,580 @@
+/*************************************************************
+@Name: APTS_OrderLineItemTriggerHelper
+@Author: Meet Desai (Apttus)
+@CreateDate: 26 Oct, 2016
+@Description: Helper class for Trigger on Order Line Item Object.
+@UsedBy: Trigger APTS_OrderLineItemTriggerHandler
+******************************************************************
+@ModifiedBy: Meet Desai
+@ModifiedOn: 29 Nov, 2016
+@Description: Added updateStatusAndStageOnInsert, updateStatusAndStageOnUpdate and updateStatusAndStageOnDelete methods to update Order Status and Quotation Stage.
+******************************************************************
+@ModifiedBy: Meet Desai
+@ModifiedDate: 1 Feb, 2017
+@ChangeDescription: Code changes suggested by Static Code Analyser
+******************************************************************
+@ModifiedBy: Meet Desai
+@ModifiedDate: 13 Feb, 2017
+@ChangeDescription: Code changes to handle Error scenarios
+******************************************************************
+@ModifiedBy: Karsan Prajapati
+@ModifiedDate: 10 Aug, 2017
+@ChangeDescription: Commented out the old logic and added bulkification to update multiple Agreement Line Item to fix #HPALM-12398.
+*/
+
+public class APTS_OrderLineItemTriggerHelper{
+    
+    public  Set<Id> agreementIdlist= new Set<Id>();
+    public  Map<Id, Apttus__AgreementLineItem__c> agrLIsToUpdate = new Map<Id, Apttus__AgreementLineItem__c>([SELECT Id from Apttus__AgreementLineItem__c where Id IN :agreementIdlist]);
+    public  Map<Id, Decimal> agreementLineToSumMap  = new Map<Id, Decimal>();
+    public  List<Apttus__AgreementLineItem__c> listAgreementLineToUpdate=new List<Apttus__AgreementLineItem__c>();
+    public  List<Apttus__AgreementLineItem__c> listAgreementLineItemToUpdate=new List<Apttus__AgreementLineItem__c>();
+    public  Set<Apttus__AgreementLineItem__c> setAgreementLineItemToUpdate=new Set<Apttus__AgreementLineItem__c>();
+
+    //To update Order Status and Quotation Stage on insertion of Order Line Item - Added by Meet Desai
+    public void updateStatusAndStageOnInsert(List<Apttus_Config2__OrderLineItem__c> listOfOrderLI){
+        Set<ID> setNewOrderId = new Set<ID>();
+        Set<ID> setQuoteId = new Set<ID>();
+        Set<ID> setOLIOrdered = new Set<ID>();
+        Set<ID> setOLIPendingOrder = new Set<ID>();
+        Set<ID> setOLIOtherOrder = new Set<ID>();
+        List<Apttus_Config2__Order__c> listOrderToBeUpdated = new List<Apttus_Config2__Order__c>();
+        List<Apttus_Proposal__Proposal__c> listQuoteToBeUpdated = new List<Apttus_Proposal__Proposal__c>();
+        for(Apttus_Config2__OrderLineItem__c newOLI : listOfOrderLI){
+            setNewOrderId.add(newOLI.Apttus_Config2__OrderId__c);
+        }
+
+        List<Apttus_Config2__OrderLineItem__c> listAllOrderLineItem = [Select Id, Name, Apttus_Config2__Status__c, Apttus_Config2__OrderId__c From Apttus_Config2__OrderLineItem__c Where Apttus_Config2__OrderId__c in :setNewOrderId];
+        List<Apttus_Config2__Order__c> listNewOrders = [Select Id, Name, Apttus_Config2__Status__c, Apttus_QPConfig__ProposalId__c From Apttus_Config2__Order__c Where Id in :setNewOrderId];
+        for(Apttus_Config2__Order__c newOrder : listNewOrders){
+            setQuoteId.add(newOrder.Apttus_QPConfig__ProposalId__c);
+        }
+
+        List<Apttus_Proposal__Proposal__c> listQuote = [Select Id, Name, Apttus_Proposal__Approval_Stage__c From Apttus_Proposal__Proposal__c Where Id in :setQuoteId];
+        for(Apttus_Proposal__Proposal__c quote : listQuote){
+            for(Apttus_Config2__Order__c newOrder : listNewOrders){
+                if(newOrder.Apttus_QPConfig__ProposalId__c == quote.ID){
+                    setOLIOrdered.clear();
+                    setOLIPendingOrder.clear();
+                    setOLIOtherOrder.clear();
+                    for(Apttus_Config2__OrderLineItem__c orderLI : listAllOrderLineItem){
+                        if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID && (orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_ACKNOWLEGED 
+                            || orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_CANCELLED)){
+                            setOLIOrdered.add(orderLI.Id);
+                        }
+                        else if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID && orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDERED){
+                            setOLIPendingOrder.add(orderLI.Id);
+                        }
+                        else if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID){
+                            setOLIOtherOrder.add(orderLI.Id);
+                        }
+                    }
+
+                    if(setOLIOrdered.size() > 0 && (setOLIOrdered.size() + setOLIPendingOrder.size() + setOLIOtherOrder.size()) != setOLIOrdered.size()){
+                        newOrder.Apttus_Config2__Status__c = 'Partially Ordered';
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Partially Ordered';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else if(setOLIPendingOrder.size() > 0 && setOLIOrdered.size() == 0){
+                        newOrder.Apttus_Config2__Status__c = APTS_Constants.ORDER_LINEITEM_STATUS_ORDERED;
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Order Pending'; // Fix for HPLAM 12334 - Error Placing Order
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else if(setOLIOrdered.size() > 0 && (setOLIOrdered.size() + setOLIPendingOrder.size() + setOLIOtherOrder.size()) == setOLIOrdered.size()){
+                        newOrder.Apttus_Config2__Status__c = APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_ACKNOWLEGED;
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Ordered';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else{
+                        newOrder.Apttus_Config2__Status__c = 'New';
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Won';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                }
+            }
+        }
+
+        if(!listOrderToBeUpdated.isEmpty()){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listOrderToBeUpdated;
+        }
+        if(!listQuoteToBeUpdated.isEmpty()){
+            APTS_ProposalTriggerHandler.ExecuteTriggers = false;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listQuoteToBeUpdated;
+        }
+        //Jinal Bhatt - Post chatter recprd on OLI
+        postChatter(listOfOrderLI);
+    }
+    
+    //Jira 3998: Start : Jinal Bhatt -  When OLI's status gets updated post the chatter
+    public void postChatter(List<Apttus_Config2__OrderLineItem__c> listOfOrderLI) {
+        try {
+            if (listOfOrderLI != null && listOfOrderLI.size() > 0) {
+                FeedItem post;
+                List<FeedItem> lstFeedItem = new List<FeedItem>();
+                for (Apttus_Config2__OrderLineItem__c objOLI : listOfOrderLI) {
+                    post = new FeedItem();
+                    post.ParentId = objOLI.Id;
+                    post.Body = 'Your order has been placed with ' +  objOLI.Apttus_Config2__Status__c +' status';
+                    lstFeedItem.add(post);
+                }
+                if (lstFeedItem != null && lstFeedItem.size() > 0) insert lstFeedItem;
+            }
+        } catch(Exception e) {
+            system.debug('############### Line Number: '+ e.getLineNumber() + ': ' + e.getMessage());
+        }
+    }
+    //End
+
+    //To update Order Status and Quotation Stage on updation of Order Line Item - Added by Meet Desai
+    public void updateStatusAndStageOnUpdate(List<Apttus_Config2__OrderLineItem__c> listOrderNewLI, List<Apttus_Config2__OrderLineItem__c> listOrderOldLI, Map<Id,Apttus_Config2__OrderLineItem__c> mapOrderLIOld){
+        Set<ID> setNewOrderId = new Set<ID>();
+        Set<ID> setQuoteId = new Set<ID>();
+        Set<ID> setOLIOrdered = new Set<ID>();
+        Set<ID> setOLIPendingOrder = new Set<ID>();
+        Set<ID> setOLIOtherOrder = new Set<ID>();
+        List<Apttus_Config2__Order__c> listOrderToBeUpdated = new List<Apttus_Config2__Order__c>();
+        List<Apttus_Proposal__Proposal__c> listQuoteToBeUpdated = new List<Apttus_Proposal__Proposal__c>();
+        for(Apttus_Config2__OrderLineItem__c newOLI : listOrderNewLI){
+            setNewOrderId.add(newOLI.Apttus_Config2__OrderId__c);
+        }
+
+        List<Apttus_Config2__OrderLineItem__c> listAllOrderLineItem = [Select Id, Name, Apttus_Config2__Status__c, Apttus_Config2__OrderId__c From Apttus_Config2__OrderLineItem__c Where Apttus_Config2__OrderId__c in :setNewOrderId];
+        List<Apttus_Config2__Order__c> listNewOrders = [Select Id, Name, Apttus_Config2__Status__c, Apttus_QPConfig__ProposalId__c From Apttus_Config2__Order__c Where Id in :setNewOrderId];
+        for(Apttus_Config2__Order__c newOrder : listNewOrders){
+            setQuoteId.add(newOrder.Apttus_QPConfig__ProposalId__c);
+        }
+
+        List<Apttus_Proposal__Proposal__c> listQuote = [Select Id, Name, Apttus_Proposal__Approval_Stage__c From Apttus_Proposal__Proposal__c Where Id in :setQuoteId];
+        for(Apttus_Proposal__Proposal__c quote : listQuote){
+            for(Apttus_Config2__Order__c newOrder : listNewOrders){
+                if(newOrder.Apttus_QPConfig__ProposalId__c == quote.ID){
+                    setOLIOrdered.clear();
+                    setOLIPendingOrder.clear();
+                    setOLIOtherOrder.clear();
+                    for(Apttus_Config2__OrderLineItem__c orderLI : listAllOrderLineItem){
+                        if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID && (orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_ACKNOWLEGED || 
+                            orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_CANCELLED)){
+                            setOLIOrdered.add(orderLI.Id);
+                        }
+                        else if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID && orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDERED){
+                            setOLIPendingOrder.add(orderLI.Id);
+                        }
+                        else if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID){
+                            setOLIOtherOrder.add(orderLI.Id);
+                        }
+                    }
+
+                    if(setOLIOrdered.size() > 0 && (setOLIOrdered.size() + setOLIPendingOrder.size() + setOLIOtherOrder.size()) != setOLIOrdered.size()){
+                        newOrder.Apttus_Config2__Status__c = 'Partially Ordered';
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Partially Ordered';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else if(setOLIPendingOrder.size() > 0 && setOLIOrdered.size() == 0){
+                        newOrder.Apttus_Config2__Status__c = APTS_Constants.ORDER_LINEITEM_STATUS_ORDERED;
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Order Pending';// Fix for HPLAM 12334 - Error Placing Order
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else if(setOLIOrdered.size() > 0 && (setOLIOrdered.size() + setOLIPendingOrder.size() + setOLIOtherOrder.size()) == setOLIOrdered.size()){
+                        newOrder.Apttus_Config2__Status__c =APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_ACKNOWLEGED;
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Ordered';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else{
+                        newOrder.Apttus_Config2__Status__c = 'New';
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Won';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                }
+            }
+        }
+
+        if(!listOrderToBeUpdated.isEmpty()){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listOrderToBeUpdated;
+        }
+        if(!listQuoteToBeUpdated.isEmpty()){
+            APTS_ProposalTriggerHandler.ExecuteTriggers = false;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listQuoteToBeUpdated;
+        }
+        
+        //Start: Jinal Bhatt - If newOLI.Status != olsOLI.status then only post chatter on OLI record.
+        if (listOrderNewLI != null && listOrderNewLI.size() > 0 && mapOrderLIOld != null && mapOrderLIOld.size() > 0) {
+            for (Apttus_Config2__OrderLineItem__c objNewLI : listOrderNewLI) {
+                if (mapOrderLIOld.get(objNewLI.Id) != null  && objNewLI.Apttus_Config2__Status__c != mapOrderLIOld.get(objNewLI.Id).Apttus_Config2__Status__c ) {
+                    postChatter(listOrderNewLI);
+                }
+            }
+        }
+        //End
+    }
+
+    //To update Order Status and Quotation Stage on deletion of Order Line Item - Added by Meet Desai
+    public void updateStatusAndStageOnDelete(List<Apttus_Config2__OrderLineItem__c> listOfOrderLI){
+        Set<ID> setNewOrderId = new Set<ID>();
+        Set<ID> setQuoteId = new Set<ID>();
+        Set<ID> setOLIOrdered = new Set<ID>();
+        Set<ID> setOLIPendingOrder = new Set<ID>();
+        Set<ID> setOLIOtherOrder = new Set<ID>();
+        List<Apttus_Config2__Order__c> listOrderToBeUpdated = new List<Apttus_Config2__Order__c>();
+        List<Apttus_Proposal__Proposal__c> listQuoteToBeUpdated = new List<Apttus_Proposal__Proposal__c>();
+        for(Apttus_Config2__OrderLineItem__c newOLI : listOfOrderLI){
+            setNewOrderId.add(newOLI.Apttus_Config2__OrderId__c);
+        }
+
+        List<Apttus_Config2__OrderLineItem__c> listAllOrderLineItem = [Select Id, Name, Apttus_Config2__Status__c, Apttus_Config2__OrderId__c From Apttus_Config2__OrderLineItem__c Where Apttus_Config2__OrderId__c in :setNewOrderId];
+        List<Apttus_Config2__Order__c> listNewOrders = [Select Id, Name, Apttus_Config2__Status__c, Apttus_QPConfig__ProposalId__c From Apttus_Config2__Order__c Where Id in :setNewOrderId];
+        for(Apttus_Config2__Order__c newOrder : listNewOrders){
+            setQuoteId.add(newOrder.Apttus_QPConfig__ProposalId__c);
+        }
+
+        List<Apttus_Proposal__Proposal__c> listQuote = [Select Id, Name, Apttus_Proposal__Approval_Stage__c From Apttus_Proposal__Proposal__c Where Id in :setQuoteId];
+        for(Apttus_Proposal__Proposal__c quote : listQuote){
+            for(Apttus_Config2__Order__c newOrder : listNewOrders){
+                if(newOrder.Apttus_QPConfig__ProposalId__c == quote.ID){
+                    setOLIOrdered.clear();
+                    setOLIPendingOrder.clear();
+                    setOLIOtherOrder.clear();
+                    for(Apttus_Config2__OrderLineItem__c orderLI : listAllOrderLineItem){
+                        if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID && (orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_ACKNOWLEGED 
+                            ||  orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_CANCELLED)){
+                            setOLIOrdered.add(orderLI.Id);
+                        }
+                        else if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID && orderLI.Apttus_Config2__Status__c == APTS_Constants.ORDER_LINEITEM_STATUS_ORDERED){
+                            setOLIPendingOrder.add(orderLI.Id);
+                        }
+                        else if(orderLI.Apttus_Config2__OrderId__c == newOrder.ID){
+                            setOLIOtherOrder.add(orderLI.Id);
+                        }
+                    }
+
+                    if(setOLIOrdered.size() > 0 && (setOLIOrdered.size() + setOLIPendingOrder.size() + setOLIOtherOrder.size()) != setOLIOrdered.size()){
+                        newOrder.Apttus_Config2__Status__c = 'Partially Ordered';
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Partially Ordered';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else if(setOLIPendingOrder.size() > 0 && setOLIOrdered.size() == 0){
+                        newOrder.Apttus_Config2__Status__c = APTS_Constants.ORDER_LINEITEM_STATUS_ORDERED;
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Order Pending';// Fix for HPLAM 12334 - Error Placing Order
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else if(setOLIOrdered.size() > 0 && (setOLIOrdered.size() + setOLIPendingOrder.size() + setOLIOtherOrder.size()) == setOLIOrdered.size()){
+                        newOrder.Apttus_Config2__Status__c = APTS_Constants.ORDER_LINEITEM_STATUS_ORDER_ACKNOWLEGED;
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Ordered';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                    else{
+                        newOrder.Apttus_Config2__Status__c = 'New';
+                        quote.Apttus_Proposal__Approval_Stage__c = 'Won';
+                        listOrderToBeUpdated.add(newOrder);
+                        listQuoteToBeUpdated.add(quote);
+                    }
+                }
+            }
+        }
+
+        if(!listOrderToBeUpdated.isEmpty()){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listOrderToBeUpdated;
+        }
+        if(!listQuoteToBeUpdated.isEmpty()){
+            APTS_ProposalTriggerHandler.ExecuteTriggers = false;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listQuoteToBeUpdated;
+        }
+    }
+
+    //Added by Jaiminee
+    //Upate totalorderedquantity field of AgreementLI on insertion of new orderLI
+    public void changeQuantityInALIOnInsert(List<Apttus_Config2__OrderLineItem__c>  listOfOrderLI){
+        if(agrLIsToUpdate!=null && agrLIsToUpdate.keySet()!=null){
+            for(Apttus_Config2__OrderLineItem__c newListAgreementLI :listOfOrderLI){
+                //Added by Juhi Rawal for HPALM - 15339 on 14th Nov 2017 for null check
+                if(String.isNotBlank(newListAgreementLI.APTS_FA_Agreement_Line_Item__c)){
+                    agreementIdlist.add(newListAgreementLI.APTS_FA_Agreement_Line_Item__c);
+                }
+            }
+            /**
+            * @jira/hpalm: HPALM-12398
+            * @owner: Karsan Prajapati
+            * @modified-date: 10th Aug 2017
+            * @desc: Commented out the old logic and added bulkification to update multiple Agreement Line Item to fix #12398.
+            * @note: Defect ID : 12398  Getting Error while loading Order Line Items.
+            **///BEG:
+            /*
+            List<Apttus_Config2__OrderLineItem__c> listQtyOLI = [SELECT APTS_Qty__c from Apttus_Config2__OrderLineItem__c where APTS_FA_Agreement_Line_Item__c IN: agreementIdlist];
+            for(Apttus_Config2__OrderLineItem__c oLI:listOfOrderLI ){
+                agreementIdlist.add(oLI.APTS_FA_Agreement_Line_Item__c);
+                if(oLI.APTS_FA_Agreement_Line_Item__c != null && oLI.APTS_Qty__c != null){
+                    decimal sum = 0;
+                    for(Apttus_Config2__OrderLineItem__c lis : listQtyOLI){
+                        sum += lis.APTS_Qty__c ;
+                    }
+                    agreementLineToSumMap.put(oLI.APTS_FA_Agreement_Line_Item__c,sum);
+                }
+            }
+            */
+            //Added by Juhi Rawal for HPALM - 15339 on 14th Nov 2017 for null check
+            if(!agreementIdlist.isEmpty()){
+                for(AggregateResult oAggregateResult : [SELECT APTS_FA_Agreement_Line_Item__c, SUM(APTS_Qty__c) Total_Qty FROM Apttus_Config2__OrderLineItem__c WHERE APTS_FA_Agreement_Line_Item__c != null AND APTS_Qty__c != null AND APTS_FA_Agreement_Line_Item__c IN: agreementIdlist GROUP BY APTS_FA_Agreement_Line_Item__c]) {
+                    agreementLineToSumMap.put(String.valueOf(oAggregateResult.get('APTS_FA_Agreement_Line_Item__c')), Decimal.valueOf(String.valueOf(oAggregateResult.get('Total_Qty'))));
+                }
+                
+            }
+            //END:          
+        }
+        if(agreementLineToSumMap.keySet()!=null && agreementLineToSumMap.keySet().size()>0){
+            for(Id agreementLineId:agreementLineToSumMap.keySet()){
+                Apttus__AgreementLineItem__c agreementLine=new Apttus__AgreementLineItem__c(Id=agreementLineId,APTS_Total_Quantity_Ordered__c=agreementLineToSumMap.get(agreementLineId));
+                listAgreementLineToUpdate.add(agreementLine);
+            }
+        }  
+
+        if(listAgreementLineToUpdate!=null && listAgreementLineToUpdate.size()>0){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            setAgreementLineItemToUpdate.addAll(listAgreementLineToUpdate);
+            listAgreementLineItemToUpdate.addAll(setAgreementLineItemToUpdate);
+            update listAgreementLineItemToUpdate;
+        }
+    }
+
+    //Added by Jaiminee
+    //Update totalorderedquantity field of AgreementLI on updation of quantity of existing orderLI
+    public void changeQuantityInALIOnUpdate(List<Apttus_Config2__OrderLineItem__c> listOrderNewLI, List<Apttus_Config2__OrderLineItem__c> listOrderOldLI){
+        try{
+                if(agrLIsToUpdate!=null && agrLIsToUpdate.keySet()!=null){
+                for(Apttus_Config2__OrderLineItem__c newListAgreementLI :listOrderNewLI){
+                    //Added by Juhi Rawal for HPALM - 15339 on 14th Nov 2017 for null check
+                    if(String.isNotBlank(newListAgreementLI.APTS_FA_Agreement_Line_Item__c)){
+                        agreementIdlist.add(newListAgreementLI.APTS_FA_Agreement_Line_Item__c);
+                    }
+                }
+
+                //Added by Juhi Rawal for HPALM - 15339 on 14th Nov 2017 for null check
+                if(!agreementIdlist.isEmpty()){
+                    List<Apttus_Config2__OrderLineItem__c> listQtyOLI = [SELECT APTS_Qty__c from Apttus_Config2__OrderLineItem__c where APTS_FA_Agreement_Line_Item__c IN: agreementIdlist];
+
+                    for(Apttus_Config2__OrderLineItem__c nOLI: listOrderNewLI){
+                        for(Apttus_Config2__OrderLineItem__c oOLI: listOrderOldLI){
+                            if(nOLI.Id == oOLI.Id && nOLI.APTS_Qty__c != oOLI.APTS_Qty__c){
+                                agreementIdlist.add(nOLI.APTS_FA_Agreement_Line_Item__c);
+								}
+								
+                                if((nOLI.APTS_FA_Agreement_Line_Item__c!=null)&& nOLI.Id == oOLI.Id && nOLI.APTS_Qty__c != oOLI.APTS_Qty__c){
+                                    decimal sum = 0;
+                                    for(Apttus_Config2__OrderLineItem__c lis : listQtyOLI){
+                                        sum += lis.APTS_Qty__c ;
+                                    }
+                                    agreementLineToSumMap.put(nOLI.APTS_FA_Agreement_Line_Item__c,sum);
+                                }
+                            
+                        }
+                    }                    
+                }
+            
+
+            if(agreementLineToSumMap.keySet()!=null && agreementLineToSumMap.keySet().size()>0){
+                for(Id agreementLineId:agreementLineToSumMap.keySet()){
+                    Apttus__AgreementLineItem__c agreementLine=new Apttus__AgreementLineItem__c(Id=agreementLineId,APTS_Total_Quantity_Ordered__c=agreementLineToSumMap.get(agreementLineId));
+                    listAgreementLineToUpdate.add(agreementLine);
+                }
+            }
+            if(listAgreementLineToUpdate!=null && listAgreementLineToUpdate.size()>0){
+                APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+                setAgreementLineItemToUpdate.addAll(listAgreementLineToUpdate);
+                listAgreementLineItemToUpdate.addAll(setAgreementLineItemToUpdate);
+                update listAgreementLineItemToUpdate;
+            }
+        }catch(DmlException ex){
+           listOrderNewLI[0].addError(ex.getDmlMessage(0));
+      }catch(Exception e){
+          throw e; 
+        }
+        
+    }
+
+    //Added by Jaiminee
+    //update totalquantityordered field  of AgreementLI on deletion of orderLI
+    public void changeQuantityInALIOnDelete(List<Apttus_Config2__OrderLineItem__c>  listOfOrderLI){
+        if(agrLIsToUpdate!=null && agrLIsToUpdate.keySet()!=null){
+            for(Apttus_Config2__OrderLineItem__c newListAgreementLI :listOfOrderLI){
+                //Added by Juhi Rawal for HPALM - 15339 on 14th Nov 2017 for null check
+                if(String.isNotBlank(newListAgreementLI.APTS_FA_Agreement_Line_Item__c)){
+                    agreementIdlist.add(newListAgreementLI.APTS_FA_Agreement_Line_Item__c);
+                }
+            }
+			
+			}
+            
+            //Added by Juhi Rawal for HPALM - 15339 on 14th Nov 2017 for null check
+            if(!agreementIdlist.isEmpty()){
+                List<Apttus_Config2__OrderLineItem__c> listQtyOLI = [SELECT APTS_Qty__c from Apttus_Config2__OrderLineItem__c where APTS_FA_Agreement_Line_Item__c IN: agreementIdlist];
+                for(Apttus_Config2__OrderLineItem__c oLI:listOfOrderLI){
+                    agreementIdlist.add(oLI.APTS_FA_Agreement_Line_Item__c);
+                    if(oLI.APTS_FA_Agreement_Line_Item__c != null && oLI.APTS_Qty__c != null){
+                        decimal sum = 0;
+                        for(Apttus_Config2__OrderLineItem__c lis : listQtyOLI){
+                            sum += lis.APTS_Qty__c ;
+                        }
+                        agreementLineToSumMap.put(oLI.APTS_FA_Agreement_Line_Item__c,sum);
+                    }
+                }                
+            }
+        }
+
+        if(agreementLineToSumMap.keySet()!=null && agreementLineToSumMap.keySet().size()>0){
+            for(Id agreementLineId:agreementLineToSumMap.keySet()){
+                Apttus__AgreementLineItem__c agreementLine=new Apttus__AgreementLineItem__c(Id=agreementLineId,APTS_Total_Quantity_Ordered__c=agreementLineToSumMap.get(agreementLineId));
+                listAgreementLineToUpdate.add(agreementLine);
+            }
+        }
+
+        if(listAgreementLineToUpdate!=null && listAgreementLineToUpdate.size()>0){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            setAgreementLineItemToUpdate.addAll(listAgreementLineToUpdate);
+            listAgreementLineItemToUpdate.addAll(setAgreementLineItemToUpdate);
+            update listAgreementLineItemToUpdate;
+        }
+    }
+
+    //To insert Order Handler to Proposal Line Item and Cart Line Item when inserted in Order Line Item - Added by Meet Desai
+    public void addOrderHandlerToPLIAndLI(List<Apttus_Config2__OrderLineItem__c>  listOfOrderLI){
+        Map<ID, Apttus_Config2__OrderLineItem__c> mapProposalLIIdToOrderLI = new Map<ID, Apttus_Config2__OrderLineItem__c>();
+        Map<ID, Apttus_Config2__OrderLineItem__c> mapCartLIIdToOrderLI = new Map<ID, Apttus_Config2__OrderLineItem__c>();
+        List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLIToBeUpdated = new List<Apttus_Proposal__Proposal_Line_Item__c>();
+        List<Apttus_Config2__LineItem__c> listCartLIToBeUpdated = new List<Apttus_Config2__LineItem__c>();
+
+        for(Apttus_Config2__OrderLineItem__c orderLI : listOfOrderLI){
+            mapProposalLIIdToOrderLI.put(orderLI.Apttus_QPConfig__ProposalLineItemId__c, orderLI);
+            mapCartLIIdToOrderLI.put(orderLI.Apttus_Config2__DerivedFromId__c, orderLI);
+        }
+
+        List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItem = [Select ID, Name, APTS_Order_Handler__c From Apttus_Proposal__Proposal_Line_Item__c Where ID in :mapProposalLIIdToOrderLI.KeySet()];
+        List<Apttus_Config2__LineItem__c> listCartLineItem = [Select ID, Name, APTS_Order_Handler__c From Apttus_Config2__LineItem__c Where ID in :mapCartLIIdToOrderLI.KeySet()];
+
+        for(Apttus_Proposal__Proposal_Line_Item__c proposalLineItem : listProposalLineItem){
+            proposalLineItem.APTS_Order_Handler__c = mapProposalLIIdToOrderLI.get(proposalLineItem.ID).APTS_Order_Handler__c;
+            listProposalLIToBeUpdated.add(proposalLineItem);
+        }
+
+        for(Apttus_Config2__LineItem__c cartLineItem : listCartLineItem){
+            cartLineItem.APTS_Order_Handler__c = mapCartLIIdToOrderLI.get(cartLineItem.ID).APTS_Order_Handler__c;
+            cartLineItem.Apttus_Config2__LineStatus__c= mapCartLIIdToOrderLI.get(cartLineItem.ID).Apttus_Config2__Status__c;
+            if(mapCartLIIdToOrderLI.get(cartLineItem.ID).Apttus_Config2__Status__c==APTS_Constants.ORDER_LINEITEM_STATUS_NOT_ORDERED && mapCartLIIdToOrderLI.get(cartLineItem.ID).APTS_Approval_Required__c==true){
+                cartLineItem.Apttus_Config2__IsReadOnly__c=false;    
+            }
+            listCartLIToBeUpdated.add(cartLineItem);
+        }
+
+        if(!listProposalLIToBeUpdated.isEmpty()){
+            APTS_ProposalLineItemTriggerHandler.ExecuteTriggers = false;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listProposalLIToBeUpdated;
+        }
+
+        if(!listCartLIToBeUpdated.isEmpty()){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listCartLIToBeUpdated;
+        }
+    }
+
+    //To update Order Handler to Proposal Line Item and Cart Line Item when updated in Order Line Item - Added by Meet Desai
+    public void updateOrderHandlerToPLIAndLI(List<Apttus_Config2__OrderLineItem__c>  listOfNewOrderLI){
+        Map<ID, Apttus_Config2__OrderLineItem__c> mapProposalLIIdToOrderLI = new Map<ID, Apttus_Config2__OrderLineItem__c>();
+        Map<ID, Apttus_Config2__OrderLineItem__c> mapCartLIIdToOrderLI = new Map<ID, Apttus_Config2__OrderLineItem__c>();
+        List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLIToBeUpdated = new List<Apttus_Proposal__Proposal_Line_Item__c>();
+        List<Apttus_Config2__LineItem__c> listCartLIToBeUpdated = new List<Apttus_Config2__LineItem__c>();
+
+        for(Apttus_Config2__OrderLineItem__c orderLI : listOfNewOrderLI){
+            mapProposalLIIdToOrderLI.put(orderLI.Apttus_QPConfig__ProposalLineItemId__c, orderLI);
+            mapCartLIIdToOrderLI.put(orderLI.Apttus_Config2__DerivedFromId__c, orderLI);
+        }
+
+        List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItem = [Select ID, Name, APTS_Order_Handler__c From Apttus_Proposal__Proposal_Line_Item__c Where ID in :mapProposalLIIdToOrderLI.KeySet()];
+        List<Apttus_Config2__LineItem__c> listCartLineItem = [Select ID, Name, APTS_Order_Handler__c From Apttus_Config2__LineItem__c Where ID in :mapCartLIIdToOrderLI.KeySet()];
+
+        for(Apttus_Proposal__Proposal_Line_Item__c proposalLineItem : listProposalLineItem){
+            proposalLineItem.APTS_Order_Handler__c = mapProposalLIIdToOrderLI.get(proposalLineItem.ID).APTS_Order_Handler__c;
+            listProposalLIToBeUpdated.add(proposalLineItem);
+        }
+
+        for(Apttus_Config2__LineItem__c cartLineItem : listCartLineItem){
+            cartLineItem.APTS_Order_Handler__c = mapCartLIIdToOrderLI.get(cartLineItem.ID).APTS_Order_Handler__c;
+            cartLineItem.Apttus_Config2__LineStatus__c= mapCartLIIdToOrderLI.get(cartLineItem.ID).Apttus_Config2__Status__c;
+            if(mapCartLIIdToOrderLI.get(cartLineItem.ID).Apttus_Config2__Status__c==APTS_Constants.ORDER_LINEITEM_STATUS_NOT_ORDERED && mapCartLIIdToOrderLI.get(cartLineItem.ID).APTS_Approval_Required__c==true){
+                cartLineItem.Apttus_Config2__IsReadOnly__c=false;    
+            }
+            listCartLIToBeUpdated.add(cartLineItem);
+        }
+
+        if(!listProposalLIToBeUpdated.isEmpty()){
+            APTS_ProposalLineItemTriggerHandler.ExecuteTriggers = false;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listProposalLIToBeUpdated;
+        }
+
+        if(!listCartLIToBeUpdated.isEmpty()){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+            update listCartLIToBeUpdated;
+        }
+    }
+
+    //To delete Order Handler to Proposal Line Item and Cart Line Item when deleted from Order Line Item - Added by Meet Desai
+    public void deleteOrderHandlerToPLIAndLI(List<Apttus_Config2__OrderLineItem__c>  listOfOrderLI){
+        Map<ID, Apttus_Config2__OrderLineItem__c> mapProposalLIIdToOrderLI = new Map<ID, Apttus_Config2__OrderLineItem__c>();
+        Map<ID, Apttus_Config2__OrderLineItem__c> mapCartLIIdToOrderLI = new Map<ID, Apttus_Config2__OrderLineItem__c>();
+        List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLIToBeUpdated = new List<Apttus_Proposal__Proposal_Line_Item__c>();
+        List<Apttus_Config2__LineItem__c> listCartLIToBeUpdated = new List<Apttus_Config2__LineItem__c>();
+
+        for(Apttus_Config2__OrderLineItem__c orderLI : listOfOrderLI){
+            mapProposalLIIdToOrderLI.put(orderLI.Apttus_QPConfig__ProposalLineItemId__c, orderLI);
+            mapCartLIIdToOrderLI.put(orderLI.Apttus_Config2__DerivedFromId__c, orderLI);
+        }
+
+        List<Apttus_Proposal__Proposal_Line_Item__c> listProposalLineItem = [Select ID, Name, APTS_Order_Handler__c From Apttus_Proposal__Proposal_Line_Item__c Where ID in :mapProposalLIIdToOrderLI.KeySet()];
+        List<Apttus_Config2__LineItem__c> listCartLineItem = [Select ID, Name, APTS_Order_Handler__c From Apttus_Config2__LineItem__c Where ID in :mapCartLIIdToOrderLI.KeySet()];
+
+        for(Apttus_Proposal__Proposal_Line_Item__c proposalLineItem : listProposalLineItem){
+            proposalLineItem.APTS_Order_Handler__c = null;
+            listProposalLIToBeUpdated.add(proposalLineItem);
+			
+			if(!listProposalLIToBeUpdated.isEmpty()){
+            APTS_ProposalLineItemTriggerHandler.ExecuteTriggers = false;
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+			}
+        }  
+		  update listProposalLIToBeUpdated;
+		
+		
+
+        for(Apttus_Config2__LineItem__c cartLineItem : listCartLineItem){
+            cartLineItem.APTS_Order_Handler__c = null;
+            listCartLIToBeUpdated.add(cartLineItem);
+			if(!listCartLIToBeUpdated.isEmpty()){
+            APTS_OrderLineItemTriggerHandler.ExecuteTriggers = false;
+			}
+        } 
+		  update listCartLIToBeUpdated;
+
+        
+           
+        
+
+        
+            
+        }
+    }
+}

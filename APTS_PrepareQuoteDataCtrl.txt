@@ -1,0 +1,766 @@
+**
+* @Name: APTS_PrepareQuoteDataCtrl 
+* @Author: Karsan Prajapati
+* @CreateDate: 26th Jul 2017
+* @Description: This is controller class for APTS_PrepareQuoteData page.
+* @Notes : 
+******************************************************************
+* @LastModifiedBy: Karsan Prajapati
+* @LastModifiedDate: 6th Sep 2017
+* @ChangeDescription: Changes in getPrepareQuoteDataWrapper() to retirieve more fields (Apttus_Config2__CollaborationRequestId__r.Apttus_Config2__ChildConfigurationId__c, APTS_BAL_ID__c)
+*                     Changes in createChildCart() to update APTS_Cloned_From__c field with child line item id of old line item.
+*                     Changes in createChildCart() to update Collaboration owner with factory queue once child cart gets created.
+*                     HPALM-10000: NexTra error when trying to reconfigure item from a Deep Cloned quote
+******************************************************************
+* @LastModifiedBy: Karsan Prajapati
+* @LastModifiedDate: 13th Sep 2017
+* @ChangeDescription:   Added updateCartSummaryGroup() method to update Summary Group records with old configuration's summary group.
+*                       Modified updateConfigurationTempObject() method to add PricingBatchSize related changes in TempObject XML.
+*                       HPALM-13290: Prices set to 0 after revising quotation.
+******************************************************************
+* @LastModifiedBy: Karsan Prajapati
+* @LastModifiedDate: 3rd Nov 2017
+* @ChangeDescription:   Modified updateConfigurationTempObject() method to add flow related changes in TempObject XML.
+*                       HPALM-14848: Quote reprice issue(Due to invalid flow details in TempObject XML of Product Configuration record).
+******************************************************************
+* @LastModifiedBy: Karsan Prajapati
+* @LastModifiedDate: 21st Nov 2017
+* @ChangeDescription:   Assigned value to CONFIG_XML_VALUE_PRICING_BATCH_SIZE using System Label.
+*                       HPALM-15362: Trying to re-open quote receiving error(Pricing Batch Size issue may occure due to invalid value i.e. 20).
+******************************************************************
+* @LastModifiedBy: Mirali Khanderiya
+* @LastModifiedDate: 12th Dec 2017
+* @ChangeDescription:   Added method copyLIFields() to copy fields of LineItems from Old to New(Cloned) LineItems
+*                       Added method copyCLIFields() to copy fields of Cost Line Items from Old to New(Cloned) Cost Line Items
+*                       HPALM #15748 : Quote Revision CPU Timeout Error
+******************************************************************
+* @LastModifiedBy: 
+* @LastModifiedDate: 
+* @ChangeDescription:
+**/
+public with sharing class APTS_PrepareQuoteDataCtrl {
+  //BEG: [Karsan Prajapati] TempObject ConfigXML Labels
+    public final static String CONFIG_XML_LABEL_PARAMS              = 'Params';
+    public final static String CONFIG_XML_LABEL_PARAM               = 'Param';
+    public final static String CONFIG_XML_LABEL_NAME                = 'Name';
+    public final static String CONFIG_XML_LABEL_VALUE               = 'Value';
+    public final static String CONFIG_XML_LABEL_PRICINGPROFILE      = 'pricingProfile';
+    public final static String CONFIG_XML_LABEL_ADVANCED            = 'Advanced';
+    public final static String CONFIG_XML_LABEL_PRESTOAPPID         = 'prestoAppId';
+    public final static String CONFIG_XML_LABEL_PRICINGBATCHSIZE    = 'pricingBatchSize';
+    public final static String CONFIG_XML_LABEL_FLOW                = 'flow';
+    public final static Integer CONFIG_XML_VALUE_PRICING_BATCH_SIZE = Integer.valueOf(System.Label.APTS_Pricing_Batch_Size); //HPALM-15362
+    //END: [Karsan Prajapati] TempObject ConfigXML Labels
+    
+  public final ID oldConfigID {get; private set;}
+  public final ID newConfigID {get; private set;}
+
+  //Custom exception class to throw custom excpetions
+  public class APTS_PrepareQuoteDataException extends Exception{}
+
+  public class PrepareQuoteDataWrapper{
+    public Apttus_Config2__LineItem__c oLineItemOld {get; set;}
+    public Apttus_Config2__LineItem__c oLineItemNew {get; set;}
+    public Apttus_Config2__LineItem__c oLineItemChild {get; set;}
+    public Apttus_Config2__CollaborationRequest__c oCollabRequest {get; set;}
+    public Boolean hasError {get; set;}
+    public String errorMessage {get; set;}
+    public String status {get; set;}
+
+    public PrepareQuoteDataWrapper(){
+      this.oLineItemOld = null;
+      this.oLineItemNew = null;
+      this.oLineItemChild = null;
+      this.oCollabRequest = null;
+      this.hasError = false;
+      this.errorMessage = null;
+    }
+
+    public PrepareQuoteDataWrapper(final Apttus_Config2__LineItem__c oLineItemOld, final Apttus_Config2__LineItem__c oLineItemNew){
+      this.oLineItemOld = oLineItemOld;
+      this.oLineItemNew = oLineItemNew;
+      this.oLineItemChild = null;
+      this.oCollabRequest = null;
+      this.hasError = false;
+      this.errorMessage = null;
+    }
+  }
+
+  public class CreateChildCartResult{
+    public List<Apttus_Config2__LineItem__c> listLineItemParent {get; set;}
+    public List<Apttus_Config2__LineItem__c> listLineItemChild {get; set;}
+    public Apttus_Config2__CollaborationRequest__c oCollabRequest {get; set;}
+  }
+
+  //Default constructor to initialize class members.
+  public APTS_PrepareQuoteDataCtrl() {
+    oldConfigID = ApexPages.currentPage().getParameters().get('oldConfigID');
+    newConfigID = ApexPages.currentPage().getParameters().get('newConfigID');
+  }
+
+  /**
+    * @description : To get All the required data which will be used in VF Remoting and javascript side.
+    * @author : Karsan Prajapati
+    * @param : oldConfigID, Old Product Configuration Record ID.
+    * @param : newConfigID, New(Cloned) Product Configuration Record ID.
+    * @return : Instance of a PrepareQuoteDataWrapper class.
+    * @notes :
+    */
+    @RemoteAction
+    public static List<PrepareQuoteDataWrapper> getPrepareQuoteDataWrapper(final ID oldConfigID, final ID newConfigID) {
+      final List<PrepareQuoteDataWrapper> listQuoteDataWrapper = new List<PrepareQuoteDataWrapper>();
+      try{
+        //Check if any of the config id is blank or not then throw appropriate error.
+        if(String.isNotBlank(oldConfigID) && String.isNotBlank(newConfigID)) {
+          final Set<ID> setConfigID = new Set<ID>{oldConfigID, newConfigID};
+          PrepareQuoteDataWrapper oQuoteDataWrapperTemp;
+
+          //Retrive all line items of given configuration IDs.
+          //[SELECT Id, Apttus_Config2__ConfigurationId__c, Apttus_Config2__LineNumber__c FROM Apttus_Config2__LineItem__c WHERE Apttus_Config2__ConfigurationId__c IN :setConfigID ORDER BY Apttus_Config2__ConfigurationId__c, Apttus_Config2__LineNumber__c];
+          final Map<ID, Apttus_Config2__ProductConfiguration__c> mapConfig = new Map<ID, Apttus_Config2__ProductConfiguration__c>([SELECT Id, (SELECT Id, Apttus_Config2__ConfigurationId__c, Apttus_Config2__LineNumber__c, APTS_Cloned_From__c, Apttus_Config2__CollaborationRequestId__c, Apttus_Config2__CollaborationRequestId__r.Apttus_Config2__ChildConfigurationId__c, APTS_BAL_ID__c, Apttus_Config2__ProductId__c, Apttus_Config2__ProductId__r.Name, Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__c, APTS_Is_Valid_Configuration__c, APTS_ABB_Source_Location__c, APTS_ABB_Source_Location__r.BALId__c FROM Apttus_Config2__LineItems__r) FROM Apttus_Config2__ProductConfiguration__c WHERE Id IN :setConfigID]);
+
+          //Check if cloned product configuration has line items or not. If list is blank then throw approriate error.
+          if(mapConfig.containsKey(newConfigID) && !mapConfig.get(newConfigID).Apttus_Config2__LineItems__r.isEmpty()) {
+            final Map<ID, Apttus_Config2__LineItem__c> mapLineItemOld = new Map<ID, Apttus_Config2__LineItem__c>(mapConfig.get(oldConfigID).Apttus_Config2__LineItems__r);
+            //Iterate over all the new line items and prepare a list of PrepareQuoteDataWrapper.
+            for(Apttus_Config2__LineItem__c oLineItem : mapConfig.get(newConfigID).Apttus_Config2__LineItems__r) {
+              // check if old line item matches with new line items then prepare a list of PrepareQuoteDataWrapper.
+              if(mapLineItemOld.containsKey(oLineItem.APTS_Cloned_From__c)) {
+                listQuoteDataWrapper.add(new PrepareQuoteDataWrapper(mapLineItemOld.get(oLineItem.APTS_Cloned_From__c), oLineItem));
+              }
+            }
+          } else {
+            throw new APTS_PrepareQuoteDataException(System.Label.APTS_No_Line_Item_In_Configuration);
+          }
+            //update temp object of product configuration
+            updateConfigurationTempObject(newConfigID);
+            } else {
+                throw new APTS_PrepareQuoteDataException(System.Label.APTS_Invalid_Product_Configuration);
+            }
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[getPrepareQuoteDataWrapper] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[getPrepareQuoteDataWrapper] e.getStackTraceString: ' + e.getStackTraceString());
+
+            throw e;
+      }
+      System.debug(LoggingLevel.DEBUG, '[getPrepareQuoteDataWrapper] listQuoteDataWrapper: ' + listQuoteDataWrapper);
+      return listQuoteDataWrapper;
+    }
+
+  /**
+    * @description : To create child cart for parent line item.
+    * @author : Karsan Prajapati
+    * @param : oLineItem, Parent Line Item Record.
+    * @return : LineItem record if in case child cart created or otherwise same line item.
+    * @notes :
+    */
+    @RemoteAction
+    public static CreateChildCartResult createChildCart(final List<Apttus_Config2__LineItem__c> listLineItem, final ID childConfigIdOld) {
+        System.debug(LoggingLevel.DEBUG, '[createChildCart] listLineItem: ' + listLineItem);
+      System.debug(LoggingLevel.DEBUG, '[createChildCart] childConfigIdOld: ' + childConfigIdOld);
+      final CreateChildCartResult oResult = new CreateChildCartResult();
+
+      try {        
+        final Apttus_Config2__CollaborationRequest__c oCollabRequest = new Apttus_Config2__CollaborationRequest__c();
+          oCollabRequest.Apttus_Config2__Priority__c = APTS_Constants.COLLABORATION_PRIORITY_P2;
+          oCollabRequest.Apttus_Config2__CollaborationType__c = APTS_Constants.COLLABORATION_TYPE_MT;
+          oCollabRequest.OwnerId = UserInfo.getUserId();
+            //Defect 18299 - setting auto collab flag = true on quote revision.
+            oCollabRequest.Auto__c = true ;
+
+          final Apttus_Config2.CollabStruct.CreateCRRequestDO oCreateCRRequestDO = new Apttus_Config2.CollabStruct.CreateCRRequestDO();
+          oCreateCRRequestDO.collaborationRequestSO = oCollabRequest;
+          oCreateCRRequestDO.parentConfigId = listLineItem[0].Apttus_Config2__ConfigurationId__c; 
+          for(Apttus_Config2__LineItem__c oLineItem : listLineItem) {
+            oCreateCRRequestDO.parentLineItemIds.add(oLineItem.Id);
+          }
+          System.debug('[createChildCart] oCreateCRRequestDO: '+ oCreateCRRequestDO);
+
+          final Apttus_Config2.CollabStruct.CreateCRResponseDO oCreateCRResponseDO = Apttus_Config2.QuoteCollaborationService.createCollaborationRequest(oCreateCRRequestDO);
+          System.debug('[createChildCart] oCreateCRResponseDO: '+ oCreateCRResponseDO);
+
+          if(oCreateCRResponseDO.isSuccess) {
+            oResult.oCollabRequest = oCreateCRResponseDO.collaborationRequestSO;
+            oResult.listLineItemParent = listLineItem;
+
+                /**
+                * @HPALM: HPALM-10000
+                * @owner: Karsan Prajapati
+                * @modified-date: 6th Sep 2017
+                * @desc: update APTS_Cloned_From__c field with child line item id of old line item.
+                *        Update the oCollabRequest.OwnerId with QueId in case if it's available.
+                **/
+                //BEG-HPALM-10000:
+                //oResult.listLineItemChild = [SELECT Id, Apttus_Config2__CollaborationParentLineNumber__c, Apttus_Config2__ConfigurationId__c, Apttus_Config2__ConfigurationId__r.Apttus_Config2__CollaborationRequestId__c, APTS_Is_Valid_Configuration__c FROM Apttus_Config2__LineItem__c WHERE Apttus_Config2__ConfigurationId__r.Apttus_Config2__BusinessObjectType__c = :APTS_Constants.BUSINESS_OBJECT_TYPE_CR AND Apttus_Config2__ConfigurationId__c = :oCreateCRResponseDO.collaborationRequestSO.Apttus_Config2__ChildConfigurationId__c ORDER BY Apttus_Config2__CollaborationParentLineNumber__c];
+
+                final Set<ID> setConfigID = new Set<ID>{oResult.oCollabRequest.Apttus_Config2__ChildConfigurationId__c};
+                if(String.isNotBlank(childConfigIdOld)) {
+                    setConfigID.add(childConfigIdOld);
+                }
+
+                final Map<ID, Apttus_Config2__ProductConfiguration__c> mapConfig = new Map<ID, Apttus_Config2__ProductConfiguration__c>([SELECT Id, (SELECT Id, Apttus_Config2__CollaborationParentLineNumber__c, Apttus_Config2__ConfigurationId__c, Apttus_Config2__ConfigurationId__r.Apttus_Config2__CollaborationRequestId__c, APTS_Is_Valid_Configuration__c, APTS_Cloned_From__c, APTS_ABB_Source_Location__c, APTS_ABB_Source_Location__r.BALId__c, APTS_BAL_ID__c, APTS_External_Configurator_LineItem_ID__c, APTS_Full_Cost__c, APTS_Transfer_Price__c, Apttus_Config2__BasePrice__c, APTS_Gross_Sales_Price__c, Apttus_Config2__BaseCost__c, Apttus_Config2__BaseCostOverride__c, APTS_Market_Price_currency__c, APTS_List_Price__c, APTS_Production_Cost__c, APTS_Direct_Cost__c, APTS_Factory_Currency_Conversion_Rate__c FROM Apttus_Config2__LineItems__r ORDER BY Apttus_Config2__CollaborationParentLineNumber__c) FROM Apttus_Config2__ProductConfiguration__c WHERE Id IN :setConfigID]);
+
+                oResult.listLineItemChild = mapConfig.get(oResult.oCollabRequest.Apttus_Config2__ChildConfigurationId__c).Apttus_Config2__LineItems__r;
+                
+				final List<Apttus_Config2__LineItem__c> listLineItemChildOld
+                
+				if(String.isNotBlank(childConfigIdOld)) {
+                    listLineItemChildOld = mapConfig.get(childConfigIdOld).Apttus_Config2__LineItems__r;
+                    Boolean isLineUpdateRequire  = false;
+					}
+                      
+                    if(!listLineItemChildOld.isEmpty()) {
+                        //Iterate over all the newly created child line item and update clone from if it supports silent copy.
+                        for(Apttus_Config2__LineItem__c oLineItemChild : oResult.listLineItemChild) {
+                            for(Apttus_Config2__LineItem__c oLineItemChildOld : listLineItemChildOld) {
+                                //Check if APTS_External_Configurator_LineItem_ID__c is same in both line item, populate the Clone_From field in new child item. 
+                                if(String.isNotBlank(oLineItemChild.APTS_External_Configurator_LineItem_ID__c) && oLineItemChild.APTS_External_Configurator_LineItem_ID__c.equals(oLineItemChildOld.APTS_External_Configurator_LineItem_ID__c)) {
+                                    oLineItemChild.APTS_Cloned_From__c = oLineItemChildOld.Id;
+                                    APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIPresto(oLineItemChild, oLineItemChildOld);
+                                    isLineUpdateRequire  = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        //Check if isLineUpdateRequire is true then update the child line items
+                        if(isLineUpdateRequire) {
+                            update oResult.listLineItemChild;
+                        }
+                        //copyCLIFields(childConfigIdOld, oResult.oCollabRequest.Apttus_Config2__ChildConfigurationId__c, 0);
+                    }                    
+                
+
+                //Update the oCollabRequest.OwnerId with QueId in case if it's available.
+                if(String.isNotBlank(listLineItem[0].APTS_ABB_Source_Location__c) && String.isNotBlank(listLineItem[0].APTS_ABB_Source_Location__r.BALId__c)) {
+                    final Group userQueue = APTS_FCMAutoCollabHelper.getUserQueue(listLineItem[0].APTS_ABB_Source_Location__r.BALId__c);
+                    if(userQueue != null) {
+                        oCreateCRResponseDO.collaborationRequestSO.OwnerId = userQueue.Id;
+                        update oCreateCRResponseDO.collaborationRequestSO;
+                    }
+                }
+
+                //END-HPALM-10000:
+          } else if(oCreateCRResponseDO.hasErrors && (!oCreateCRResponseDO.errorMessages.isEmpty())) {
+              throw new APTS_PrepareQuoteDataException(String.join(oCreateCRResponseDO.errorMessages, ', '));
+          } else {
+              throw new APTS_PrepareQuoteDataException(System.Label.APTS_FCM_Collaboration_Request_Create_Error);
+          }
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[createChildCart] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[createChildCart] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+
+      return oResult;
+    }
+
+  /**
+    * @description : To populate source location in 'ABB Source Location' field if configurator has provided new source location.
+    * @author : Karsan Prajapati
+    * @param : lineItemID, Parent/Child Line Item Record Id.
+    * @return : no return statement required.
+    * @notes :
+    */
+    @RemoteAction
+    public static void populateSourceLocation(final ID lineItemID) {
+      System.debug(LoggingLevel.DEBUG, '[populateSourceLocation] lineItemID: ' + lineItemID);
+      try {
+        APTS_FCMAutoCollabCtrl.populateSourceLocation(lineItemID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[populateSourceLocation] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[populateSourceLocation] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+    }
+
+  /**
+    * @description : To Product Attributes from the configurator.
+    * @author : Karsan Prajapati
+    * @param : configID, Parent/Child Product Configuration Record Id.
+    * @return : no return statement required.
+    * @notes :
+    */
+    @RemoteAction
+    public static void getTechData(final String configID) {
+        System.debug(LoggingLevel.DEBUG, '[getTechData] configID: ' + configID);
+      try {
+          APTS_FCMAutoCollabCtrl.getTechData(configID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[getTechData] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[getTechData] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+    }
+
+  /**
+    * @description : This will update ABB Source Location and Transfer Price Currency on line item.
+    * @author : Karsan Prajapati
+    * @param : configID, Parent/Child Product Configuration Record Id.
+    * @param : bIsParentCart, true if configID is of Proposal Type, false otherwise.
+    * @return : no return statement required.
+    * @notes :
+    */
+    @RemoteAction
+    public static void updateNewLineItems(final Id configID, final Boolean bIsParentCart){
+        System.debug(LoggingLevel.DEBUG, '[updateNewLineItems] configID: ' + configID);
+        System.debug(LoggingLevel.DEBUG, '[updateNewLineItems] bIsParentCart: ' + bIsParentCart);
+      try {
+          APTS_FCMAutoCollabCtrl.updateNewLineItems(configID, bIsParentCart);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[updateNewLineItems] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[updateNewLineItems] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+    }
+
+  /**
+    * @description : To update pricing for child cart and its related object, when transfer price currency and transfer price currency (configurator) is not same.
+    * @author : Karsan Prajapati
+    * @param : configID, Child Product Configuration Record Id.
+    * @return : no return statement required.
+    * @notes :
+    */
+    @RemoteAction
+    public static void updateChildCart(final Id configID){
+        System.debug(LoggingLevel.DEBUG, '[updateChildCart] configID: ' + configID);
+      try {
+          APTS_FCMAutoCollabCtrl.updateChildCart(configID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[updateChildCart] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[updateChildCart] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+    }
+
+  /**
+    * @description : To update driver item values on cost line item.
+    * @author : Karsan Prajapati
+    * @param : configID, Parent/Child Product Configuration Record Id.
+    * @return : no return statement required.
+    * @notes :
+    */
+    @RemoteAction
+    public static void calcDriverItem(final Id configID){
+        System.debug(LoggingLevel.DEBUG, '[calcDriverItem] configID: ' + configID);
+      try {
+          APTS_FCMAutoCollabCtrl.calcDriverItem(configID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[calcDriverItem] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[calcDriverItem] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+    }
+
+  /**
+    * @description : To update PricingMode field on line item if ABB Soruce Location is changed from configurator.
+    * @author : Karsan Prajapati
+    * @param : configID, Parent/Child Product Configuration Record Id.
+    * @return : true if commission sales cart, false otherwise.
+    * @notes :
+    */
+    @RemoteAction
+    public static Boolean updatePricingMode(final Id configID){
+        System.debug(LoggingLevel.DEBUG, '[updatePricingMode] configID: ' + configID);
+        Boolean bCommissionSalesCart = false;
+      try {
+          bCommissionSalesCart = APTS_FCMAutoCollabCtrl.updatePricingMode(configID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[updatePricingMode] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[updatePricingMode] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+      return bCommissionSalesCart;
+    }
+
+  /**
+    * @description : To reprice cart.
+    * @author : Karsan Prajapati
+    * @param : configID, Parent/Child Product Configuration Record Id.
+    * @return : true if pricing is pending, false otherwise.
+    * @notes :
+    */
+    @RemoteAction
+    public static Boolean repriceCart(final Id configID){
+        System.debug(LoggingLevel.DEBUG, '[repriceCart] configID: ' + configID);
+        Boolean bIsPricePending = false;
+        APTS_CCPDMConstants.isDataMigrationInProgress = true;
+      try {
+          bIsPricePending = APTS_FCMAutoCollabCtrl.repriceCart(configID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[repriceCart] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[repriceCart] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+      return bIsPricePending;
+    }
+
+  /**
+    * @description : To submit collaboration request for merge.
+    * @author : Karsan Prajapati
+    * @param : collabReqID, Collaboration Request Record Id.
+    * @return : true if successfully submitted for merged, false otherwise.
+    * @notes :
+    */
+    @RemoteAction
+    public static Boolean submitForMerge(final Id collabReqID){
+        System.debug(LoggingLevel.DEBUG, '[submitForMerge] collabReqID: ' + collabReqID);
+        Boolean bIsSuccess = false;
+      try {
+          bIsSuccess = APTS_FCMAutoCollabCtrl.submitForMerge(collabReqID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[submitForMerge] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[submitForMerge] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+      return bIsSuccess;
+    }
+
+  /**
+    * @description : To accept collaboration merge request .
+    * @author : Karsan Prajapati
+    * @param : collabReqID, Collaboration Request Record Id.
+    * @return : true if successfully merged, false otherwise.
+    * @notes :
+    */
+    @RemoteAction
+    public static Boolean mergeToFES(final Id collabReqID){
+        System.debug(LoggingLevel.DEBUG, '[mergeToFES] collabReqID: ' + collabReqID);
+        Boolean bIsSuccess = false;
+      try {
+          bIsSuccess = APTS_FCMAutoCollabCtrl.mergeToFES(collabReqID);
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[mergeToFES] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[mergeToFES] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+      return bIsSuccess;
+    }
+
+  /**
+    * @description : To invoke silent copy API for configured line items.
+    * @author : Karsan Prajapati
+    * @param : oLineItem, Line Item Record.
+    * @return : true if successfull, false otherwise.
+    * @notes :
+    */
+    @RemoteAction
+    public static Boolean doSilentCopy(final Apttus_Config2__LineItem__c oLineItem) {
+      System.debug(LoggingLevel.DEBUG, '[doSilentCopy] oLineItem: ' + oLineItem);
+        Boolean bIsSuccess = false;
+      try {
+        final APTS_CopyDeleteLineItem oCopyDeleteLine = new APTS_CopyDeleteLineItem(oLineItem.Id);
+          oCopyDeleteLine.copyLI();
+          bIsSuccess = true;
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[doSilentCopy] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[doSilentCopy] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+      return bIsSuccess;
+    }
+
+  /**
+    * @description : To invoke silent copy API for configured line items.
+    * @author : Karsan Prajapati
+    * @param : oLineItem, Line Item Record.
+    * @return : true if successfull, false otherwise.
+    * @notes :
+    */
+    @RemoteAction
+    public static Boolean updatePlaceHolderCart(final ID quotationID, final ID configID) {
+      System.debug(LoggingLevel.DEBUG, '[updatePlaceHolderCart] configID: ' + configID);
+        Boolean bIsSuccess = false;
+      try {
+        //Retrieve all configuration for current quotation to reset APTS_Is_Place_Holder_Configuration__c flag if not already.
+            final List<Apttus_Config2__ProductConfiguration__c> listProductConfig = [SELECT Id, APTS_Is_Place_Holder_Configuration__c FROM Apttus_Config2__ProductConfiguration__c WHERE (Apttus_QPConfig__Proposald__c = :quotationID AND APTS_Is_Place_Holder_Configuration__c = true) OR (Id = :configID)];
+
+            if(!(listProductConfig.size()==1 && listProductConfig[0].Id.equals(configID) && listProductConfig[0].APTS_Is_Place_Holder_Configuration__c)) {
+              for(Apttus_Config2__ProductConfiguration__c oProductConfig : listProductConfig) {
+                oProductConfig.APTS_Is_Place_Holder_Configuration__c = oProductConfig.Id.equals(configID);
+              }
+            }
+
+            update listProductConfig;
+
+          bIsSuccess = true;
+      } catch(Exception e) {
+        System.debug(LoggingLevel.ERROR, '[updatePlaceHolderCart] e.getMessage: ' + e.getMessage());
+        System.debug(LoggingLevel.ERROR, '[updatePlaceHolderCart] e.getStackTraceString: ' + e.getStackTraceString());
+
+        throw e;
+      }
+      return bIsSuccess;
+    }
+
+
+
+  /**
+    * @description : To Update Pricing Mode and PrestoAppId elements in TempObject of Product Configuration.
+    * @author : Karsan Prajapati
+    * @param : productConfigurationID : Product Configuration Record Id.
+    * @return : No return statement required
+    */
+  public static void updateConfigurationTempObject(final ID productConfigurationID) {
+    try{
+      if(String.isNotBlank(productConfigurationID)) {
+        //Retrieve TempObject record for the current configurationID and user ConfigData field to update xml.
+        final Apttus_Config2__TempObject__c oTempObject = [SELECT Apttus_Config2__Data__c FROM Apttus_Config2__TempObject__c WHERE Apttus_Config2__ConfigurationId__c= :productConfigurationID LIMIT 1];
+
+        //Create an instance of Dom.Document class and load XML into the same.
+        final Dom.Document oDomDocument = new Dom.Document();
+        oDomDocument.load(oTempObject.Apttus_Config2__Data__c);
+
+        //Get 'Params' node from the root element.
+        final Dom.XMLNode oXMLNodeParams = oDomDocument.getRootElement().getChildElement(CONFIG_XML_LABEL_PARAMS, null);
+        Boolean bIsPricingModeRequired = true;
+        Boolean bIsPrestoAppIdRequired = true;
+                Boolean bIsPricingBatchSizeRequired = true;
+                Boolean bIsFlowRequired = true;
+
+        for(Dom.XMLNode oXMLNodeParam : oXMLNodeParams.getChildElements()) {
+		    final String sPricingProfile;
+          if(oXMLNodeParam.getNodeType() == Dom.XMLNodeType.ELEMENT && CONFIG_XML_LABEL_PRICINGPROFILE.equalsIgnoreCase(oXMLNodeParam.getChildElement(CONFIG_XML_LABEL_NAME, null).getText()) && sPricingProfile.equalsIgnoreCase(CONFIG_XML_LABEL_ADVANCED)) {
+            sPricingProfile = oXMLNodeParam.getChildElement(CONFIG_XML_LABEL_VALUE, null).getText();
+			bIsPricingModeRequired = false;
+            } else {
+              oXMLNodeParams.removeChild(oXMLNodeParam);
+              System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] Removed Invalid PricingProfile element');
+            }
+
+            System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] sPricingProfile-> ' + sPricingProfile);
+
+            //If PricingProfile is Advance then ignore otherwise delete current node and update updateConfigurationTempObject flag.
+          
+              
+          } else if(oXMLNodeParam.getNodeType() == Dom.XMLNodeType.ELEMENT && CONFIG_XML_LABEL_PRESTOAPPID.equalsIgnoreCase(oXMLNodeParam.getChildElement(CONFIG_XML_LABEL_NAME, null).getText())) {
+            bIsPrestoAppIdRequired = false;
+          } else if(oXMLNodeParam.getNodeType() == Dom.XMLNodeType.ELEMENT && CONFIG_XML_LABEL_PRICINGBATCHSIZE.equalsIgnoreCase(oXMLNodeParam.getChildElement(CONFIG_XML_LABEL_NAME, null).getText())) {
+                        bIsPricingBatchSizeRequired = false;
+                    } else if(oXMLNodeParam.getNodeType() == Dom.XMLNodeType.ELEMENT && CONFIG_XML_LABEL_FLOW.equalsIgnoreCase(oXMLNodeParam.getChildElement(CONFIG_XML_LABEL_NAME, null).getText())) {
+                        bIsFlowRequired = false;
+                    }
+        }
+        System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] bIsPricingModeRequired-> ' + bIsPricingModeRequired);
+                System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] bIsPrestoAppIdRequired-> ' + bIsPrestoAppIdRequired);
+                System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] bIsPricingBatchSizeRequired-> ' + bIsPricingBatchSizeRequired);
+        System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] bIsFlowRequired-> ' + bIsFlowRequired);
+
+        //If bIsPricingModeRequired is true then add PricingProfile as Advance to the current XMl and update the Temp Object
+        if(bIsPricingModeRequired) {
+          final Dom.XmlNode oXmlNodeParam = oXMLNodeParams.addChildElement(CONFIG_XML_LABEL_PARAM, null, null);
+          oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_NAME, null, null).addTextNode(CONFIG_XML_LABEL_PRICINGPROFILE);
+          oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_VALUE, null, null).addTextNode(CONFIG_XML_LABEL_ADVANCED);
+        }
+
+        //If bIsPrestoAppIdRequired is true then add PrestoAppId to the current XMl and update the Temp Object
+        if(bIsPrestoAppIdRequired) {
+          final Dom.XmlNode oXmlNodeParam = oXMLNodeParams.addChildElement(CONFIG_XML_LABEL_PARAM, null, null);
+          oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_NAME, null, null).addTextNode(CONFIG_XML_LABEL_PRESTOAPPID);
+          //Assign TempOject Record Id to PrestoAppId param so that prestoApp gets invoked whenever prcing call happens.
+          oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_VALUE, null, null).addTextNode(oTempObject.Id);
+        }
+
+                //If bIsPricingBatchSizeRequired is true then add pricingBatchSize to the current XMl and update the Temp Object
+                if(bIsPricingBatchSizeRequired) {
+                    final Dom.XmlNode oXmlNodeParam = oXMLNodeParams.addChildElement(CONFIG_XML_LABEL_PARAM, null, null);
+                    oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_NAME, null, null).addTextNode(CONFIG_XML_LABEL_PRICINGBATCHSIZE);
+                    //Assign Pricing Batch Size value to pricingBatchSize param.
+                    oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_VALUE, null, null).addTextNode(String.valueOf(CONFIG_XML_VALUE_PRICING_BATCH_SIZE));
+                }
+
+                //If bIsFlowRequired is true then add flow to the current XMl and update the Temp Object
+                if(bIsFlowRequired) {
+                    final Dom.XmlNode oXmlNodeParam = oXMLNodeParams.addChildElement(CONFIG_XML_LABEL_PARAM, null, null);
+                    oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_NAME, null, null).addTextNode(CONFIG_XML_LABEL_FLOW);
+                    //Assign Pricing Batch Size value to pricingBatchSize param.
+                    oXmlNodeParam.addChildElement(CONFIG_XML_LABEL_VALUE, null, null).addTextNode(String.valueOf(APTS_Constants.ACTIVE_CART_VIEW_FLOW));
+                }
+
+        //Check if bIsPricingModeRequired or bIsPrestoAppIdRequired is true then update TempObject with Updated Config XML.
+        if(bIsPricingModeRequired || bIsPrestoAppIdRequired || bIsPricingBatchSizeRequired || bIsFlowRequired) {
+          //Update TempObject with new XML.
+          oTempObject.Apttus_Config2__Data__c = oDomDocument.toXmlString();
+          update oTempObject;
+        }
+      } else {
+        throw new APTS_PrepareQuoteDataException(System.Label.APTS_Invalid_Product_Configuration);
+      }
+    } catch(Exception e) {
+      System.debug(LoggingLevel.ERROR, '[updateConfigurationTempObject] Error.Message: ' + e.getMessage());
+      System.debug(LoggingLevel.ERROR, '[updateConfigurationTempObject] Error.StackTrace: ' + e.getStackTraceString());
+      throw e;
+    }
+  }
+
+    /**
+    * @description : To copy summary group adjustments from old configurations to new configuration.
+    * @author : Karsan Prajapati
+    * @param : oldConfigID, Old Product Configuration Record ID.
+    * @param : newConfigID, New(Cloned) Product Configuration Record ID.
+    * @return : void
+    * @notes : HPALM-13290: Prices set to 0 after revising quotation.
+    */
+    @RemoteAction
+    public static void updateCartSummaryGroup(final ID oldConfigID, final ID newConfigID) {
+        try {
+            //Check if both configuration ids are blank or not.
+            if(String.isNotBlank(oldConfigID) && String.isNotBlank(newConfigID)) {
+                final Set<ID> setConfigID = new Set<ID>{oldConfigID, newConfigID};
+
+                //Retrieve all summary group records for both the configurations and then update Apttus_Config2__AdjustmentType__c & Apttus_Config2__AdjustmentAmount__c.
+                final Map<Id, Apttus_Config2__ProductConfiguration__c> mapConfig = new Map<Id, Apttus_Config2__ProductConfiguration__c>([SELECT Id, (SELECT Name, Apttus_Config2__AdjustmentType__c, Apttus_Config2__AdjustmentAmount__c FROM Apttus_Config2__SummaryGroups__r) FROM Apttus_Config2__ProductConfiguration__c WHERE Id IN :setConfigID]);
+
+                System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] mapConfig: ' + mapConfig);
+                final List<Apttus_Config2__SummaryGroup__c> listSummaryGroupUpdate = new List<Apttus_Config2__SummaryGroup__c>();
+                
+                if(setConfigID.containsAll(mapConfig.keySet())) {
+                    for(Apttus_Config2__SummaryGroup__c oSummaryGroupOld : mapConfig.get(oldConfigID).Apttus_Config2__SummaryGroups__r) {
+
+                        //If Adjusment Type is not blank then copy this field to new summary group.
+                        if(String.isNotBlank(oSummaryGroupOld.Apttus_Config2__AdjustmentType__c) && oSummaryGroupOld.Name.equals(oSummaryGroupNew.Name)){
+
+                            for(Apttus_Config2__SummaryGroup__c oSummaryGroupNew : mapConfig.get(newConfigID).Apttus_Config2__SummaryGroups__r) {
+
+                                //Check if Summary group name are same then copy adjustment fields.
+                               
+                                    oSummaryGroupNew.Apttus_Config2__AdjustmentType__c = oSummaryGroupOld.Apttus_Config2__AdjustmentType__c;
+                                    oSummaryGroupNew.Apttus_Config2__AdjustmentAmount__c = oSummaryGroupOld.Apttus_Config2__AdjustmentAmount__c;
+                                    listSummaryGroupUpdate.add(oSummaryGroupNew);
+                                    break;
+                                
+                            }
+                        }
+                    }
+                }
+
+                System.debug(LoggingLevel.DEBUG, '[updateConfigurationTempObject] listSummaryGroupUpdate: ' + listSummaryGroupUpdate);
+                update listSummaryGroupUpdate;
+            }
+        } catch(Exception e) {
+            System.debug(LoggingLevel.ERROR, '[updateCartSummaryGroup] e.getMessage: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, '[updateCartSummaryGroup] e.getStackTraceString: ' + e.getStackTraceString());
+
+            throw e;
+        }
+    }
+
+    /**
+    * @description : Copy Fields of Cost Line Items from old Quote to New (Cloned) Quote
+    * @author : Mirali Khanderiya
+    * @param : oldConfigID, Old Product Configuration Record ID.
+    * @param : newConfigID, New(Cloned) Product Configuration Record ID.
+    * @return : Offset
+    */
+    @RemoteAction
+    public static Integer copyCLIFields(final ID oldConfigID, final ID newConfigID, final Integer iOffset) {
+        
+        System.debug(LoggingLevel.ERROR, '[copyCLIFields] oldConfigID: ' + oldConfigID);
+        System.debug(LoggingLevel.ERROR, '[copyCLIFields] newConfigID: ' + newConfigID);
+        System.debug(LoggingLevel.ERROR, '[copyCLIFields] iOffset: ' + iOffset);
+        
+        Integer iCLIThreshold = APTS_Constants.COPY_LI_CLI_BATCH_SIZE +iOffset;
+        //Check if both configuration ids are blank or not.
+        if(String.isNotBlank(oldConfigID) && String.isNotBlank(newConfigID)) {
+
+            List<Apttus_Config2__CostLineItem__c> listCostLineItems = [SELECT ID, APTS_Cost_ID__c, Apttus_Config2__LineItemId__r.Apttus_Config2__LineNumber__c, APTS_Configurator__c, APTS_Configurator_Currency__c, APTS_Manual__c, APTS_Manual_Currency__c, APTS_Final_Value__c, Apttus_Config2__BaseCost__c, Apttus_Config2__NetCost__c, APTS_Default_Driver__c, APTS_Formula_Driver__c, APTS_Relative_Manual_Adjustment_percenta__c, Apttus_Config2__LineItemId__c, Apttus_Config2__LineItemId__r.Apttus_Config2__ConfigurationId__c, Apttus_Config2__LineItemId__r.APTS_Cloned_From__c from Apttus_Config2__CostLineItem__c where (Apttus_Config2__LineItemId__r.Apttus_Config2__ConfigurationId__c = :oldConfigID) OR (Apttus_Config2__LineItemId__r.Apttus_Config2__ConfigurationId__c = :newConfigID AND Apttus_Config2__LineItemId__r.Apttus_Config2__LineNumber__c> :iOffset AND Apttus_Config2__LineItemId__r.Apttus_Config2__LineNumber__c <= :iCLIThreshold ) ];
+
+            Map<ID, Map<String, Apttus_Config2__CostLineItem__c>> mapOldCLI = new Map<ID, Map<String, Apttus_Config2__CostLineItem__c>>();
+            Map<ID, Map<String, Apttus_Config2__CostLineItem__c>> mapNewCLI = new Map<ID, Map<String, Apttus_Config2__CostLineItem__c>>();
+
+            List<Apttus_Config2__CostLineItem__c> updateCLI = new List<Apttus_Config2__CostLineItem__c>();
+
+            for(Apttus_Config2__CostLineItem__c oCLI : listCostLineItems){
+                if((oCLI.Apttus_Config2__LineItemId__r.Apttus_Config2__ConfigurationId__c.equals(newConfigID))&&(!mapNewCLI.containsKey(oCLI.Apttus_Config2__LineItemId__r.APTS_Cloned_From__c))){
+                     {
+                        mapNewCLI.put(oCLI.Apttus_Config2__LineItemId__r.APTS_Cloned_From__c, new Map<String, Apttus_Config2__CostLineItem__c>());
+                    }
+                    mapNewCLI.get(oCLI.Apttus_Config2__LineItemId__r.APTS_Cloned_From__c).put(oCLI.APTS_Cost_ID__c, oCLI);
+                } else if (!mapOldCLI.containsKey(oCLI.Apttus_Config2__LineItemId__c)) {
+                    
+                        mapOldCLI.put(oCLI.Apttus_Config2__LineItemId__c, new Map<String, Apttus_Config2__CostLineItem__c>());
+                    
+                    mapOldCLI.get(oCLI.Apttus_Config2__LineItemId__c).put(oCLI.APTS_Cost_ID__c, oCLI);
+                }
+            }
+
+            for(ID lineItemID : mapNewCLI.keySet()){
+                for(String costID : mapNewCLI.get(lineItemID).keySet()){
+                    if(mapOldCLI.containsKey(lineItemID) && mapOldCLI.get(lineItemID).containsKey(costID)){
+                        Apttus_Config2__CostLineItem__c oldCLI = mapOldCLI.get(lineItemID).get(costID);
+                        Apttus_Config2__CostLineItem__c newCLI = mapNewCLI.get(lineItemID).get(costID);
+
+                        newCLI.APTS_Configurator__c = oldCLI.APTS_Configurator__c;
+                        newCLI.APTS_Configurator_Currency__c = oldCLI.APTS_Configurator_Currency__c;
+                        newCLI.APTS_Manual__c = oldCLI.APTS_Manual__c;
+                        newCLI.APTS_Manual_Currency__c = oldCLI.APTS_Manual_Currency__c;
+                        newCLI.APTS_Final_Value__c = oldCLI.APTS_Final_Value__c;
+                        newCLI.Apttus_Config2__BaseCost__c = oldCLI.Apttus_Config2__BaseCost__c;
+                        newCLI.Apttus_Config2__NetCost__c = oldCLI.Apttus_Config2__NetCost__c;
+                        newCLI.APTS_Default_Driver__c = oldCLI.APTS_Default_Driver__c;
+                        newCLI.APTS_Formula_Driver__c = oldCLI.APTS_Formula_Driver__c;
+                        newCLI.APTS_Relative_Manual_Adjustment_percenta__c = oldCLI.APTS_Relative_Manual_Adjustment_percenta__c;
+
+                        updateCLI.add(newCLI);
+                    }
+                }
+            }
+            update updateCLI;
+        }
+        return iCLIThreshold;
+    }
+
+    /**
+    * @description : Copy Fields of Line Items from old Quote to New (Cloned) Quote
+    * @author : Mirali Khanderiya
+    * @param : oldConfigID, Old Product Configuration Record ID.
+    * @param : newConfigID, New(Cloned) Product Configuration Record ID.
+    * @return : void
+    */
+    @RemoteAction
+    public static void copyLIFields(final ID oldConfigID, final ID newConfigID) {
+        
+        System.debug(LoggingLevel.ERROR, '[copyLIFields] oldConfigID: ' + oldConfigID);
+        System.debug(LoggingLevel.ERROR, '[copyLIFields] newConfigID: ' + newConfigID);
+        
+        //Check if both configuration ids are blank or not.
+        if(String.isNotBlank(oldConfigID) && String.isNotBlank(newConfigID)) {
+            final Set<ID> setConfigID = new Set<ID>{oldConfigID, newConfigID};
+            List<Apttus_Config2__LineItem__c> listLineItems = [SELECT ID, Apttus_Config2__ConfigurationId__c,  APTS_Cloned_From__c, APTS_External_Configurator_LineItem_ID__c, APTS_Full_Cost__c, APTS_Transfer_Price__c, Apttus_Config2__BasePrice__c, APTS_Gross_Sales_Price__c, Apttus_Config2__BaseCost__c, Apttus_Config2__BaseCostOverride__c, APTS_Market_Price_currency__c, APTS_List_Price__c, APTS_Production_Cost__c, APTS_Direct_Cost__c, APTS_Factory_Currency_Conversion_Rate__c  from Apttus_Config2__LineItem__c where Apttus_Config2__ConfigurationId__c in :setConfigID ];
+
+            Map<ID, Apttus_Config2__LineItem__c> mapOldLI = new Map<ID, Apttus_Config2__LineItem__c>();
+            Map<ID, Apttus_Config2__LineItem__c> mapNewLI = new Map<ID, Apttus_Config2__LineItem__c>();
+
+            List<Apttus_Config2__LineItem__c> updateLI = new List<Apttus_Config2__LineItem__c>();
+
+            for(Apttus_Config2__LineItem__c oLI : listLineItems){
+                if(oLI.Apttus_Config2__ConfigurationId__c.equals(newConfigID)){
+                    
+                    mapNewLI.put(oLI.APTS_Cloned_From__c, oLI);
+                } else {
+                    mapOldLI.put(oLI.ID, oLI);
+                }
+            }
+
+            for(ID lineItemID : mapNewLI.keySet()){
+                if(mapOldLI.containsKey(lineItemID)){
+                    Apttus_Config2__LineItem__c newLI = APTS_CPQCommonUtil.setNewLIFieldsFromOriginLIPresto(mapNewLI.get(lineItemID), mapOldLI.get(lineItemID));
+
+                    updateLI.add(newLI);
+                }
+            }
+            update updateLI;
+        }
+    }
+}

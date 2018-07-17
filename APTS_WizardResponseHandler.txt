@@ -1,0 +1,223 @@
+/*****************************************************************
+@Name: APTS_WizardResponseHandler
+@Author: Nikunj Vedia
+@CreateDate: 8th June 2016.
+@Description: REST Handler to display JSON Data created from Wizard.
+@UsedBy: ALL Wizards
+******************************************************************
+@CalculationDetails : On SharePoint : 
+FACE Wave 1 Documentation ->
+        -> 400. Build -> 20 Operational Sales -> 
+            -> 20 [Q&P]–CCP migration ->  20. Scope -> PPTR ->
+                -> NexTra+ ->VSD - Question Scoring Model.3.xlsx
+******************************************************************
+@ModifiedBy: Author who modified this process.
+@ModifiedDate: Date the process was modified.
+@ChangeDescription: A brief description of what was modified. 
+*******************************************************************/
+@RestResource(urlMapping='/submitwizardresponse')
+global with sharing class APTS_WizardResponseHandler{
+    
+    @HttpPost
+    global static String recordWizardResponse() { 
+
+        RestRequest req = RestContext.request;
+        //system.debug('JSON Response: ' +  req.requestBody.toString());
+        
+        // Converting JSON into Object Stricture
+        APTS_WizardResponseJSON WizardResponseJSONObj = New APTS_WizardResponseJSON();
+        WizardResponseJSONObj = APTS_WizardResponseJSON.parse(req.requestBody.toString());
+        
+        // Quering Wizard Based on Id from JSON
+        list<Apttus__Wizard2__c> wizardList = [Select id,Name,APTS_Actual_Score__c,APTS_Line_Item__c,
+                                                APTS_Score__c,Apttus__Status__c,Apttus__WizardDesignId__c,
+                                                APTS_Line_Item__r.Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__r.APTS_LP_AccountCustomer__r.id
+                                                from Apttus__Wizard2__c where 
+                                                id=:WizardResponseJSONObj.parameters.id];
+        
+        if(wizardList.size() > 0){
+            
+            // Quering Wizard Runtime inputs for Selected Wizard
+            Map<id,Apttus__WizardRuntimeInput__c> mapOfidtoWizardRunTimeInput = 
+            New Map<id,Apttus__WizardRuntimeInput__c>([Select id,Name,
+                                                    Apttus__ResponseValue__c,APTS_Score__c,
+                                                    Apttus__WizardInputControlId__c,Apttus__WizardInputControlId__r.Apttus__Subcategory__c,
+                                                    Apttus__WizardStepId__c,Apttus__WizardInputControlId__r.Apttus__Keywords__c,
+                                                    Apttus__WizardId__c,Apttus__WizardInputControlId__r.APTS_Weight__c
+                                                    from Apttus__WizardRuntimeInput__c where
+                                                    Apttus__WizardId__c =:wizardList[0].id]);
+            
+            // Quering Wizard Steps for Selected Wizard
+            Map<id,Apttus__WizardStep2__c> mapOfidtoWizardSteps = 
+            New Map<id,Apttus__WizardStep2__c>([Select id,Name,APTS_Scoring_Strategy__c,APTS_Weight__c,
+                                                Apttus__Sequence__c,Apttus__WizardDesignId__c
+                                                from Apttus__WizardStep2__c where 
+                                                Apttus__WizardDesignId__c =:wizardList[0].Apttus__WizardDesignId__c]);
+            
+            // Quering Wizard Input Controls for Selected Wizard
+            Map<id,Apttus__WizardInputControl2__c> mapOfidtoWizardInputControls = 
+            New Map<id,Apttus__WizardInputControl2__c>([Select id,Name,APTS_Question_Type__c,
+                                                    APTS_Max_Score__c,APTS_Weight__c,APTS_Default_From_Account__c,
+                                                    Apttus__Sequence__c,Apttus__WizardStepId__c
+                                                    from Apttus__WizardInputControl2__c 
+                                                    where Apttus__WizardStepId__c =:mapOfidtoWizardSteps.keySet()]);
+            
+            // Map of Wizard Step to list of Wizard Runtime Input
+            Map<id,list<Apttus__WizardRuntimeInput__c>> mapOfSteptoRuntimeInput = 
+            New Map<id,list<Apttus__WizardRuntimeInput__c>>();
+            
+            // Map of 'Question (Keyword)' to Map of 'Question Type (Sub Category)' to Wizard Runtime Input
+            Map<String,Map<String,Apttus__WizardRuntimeInput__c>> mapOfRelativeData = 
+                New Map<String,Map<String,Apttus__WizardRuntimeInput__c>>();
+            
+            // Iterating througn Wizard Runtime Inputs and Creating a Map 
+            for(Apttus__WizardRuntimeInput__c wizardRuntimeInputSO : mapOfidtoWizardRunTimeInput.values()){
+                if(mapOfSteptoRuntimeInput.containsKey(wizardRuntimeInputSO.Apttus__WizardStepId__c)){
+                    mapOfSteptoRuntimeInput.get(wizardRuntimeInputSO.Apttus__WizardStepId__c).add(wizardRuntimeInputSO);
+                } else {
+                    mapOfSteptoRuntimeInput.put(wizardRuntimeInputSO.Apttus__WizardStepId__c,new list<Apttus__WizardRuntimeInput__c>{wizardRuntimeInputSO});
+                }
+            }
+
+            map<id,Decimal> mapOfWizardSteptoScore = New Map<id,Decimal>();
+            Decimal totalOfImportance = 0;
+            
+            // Iterating througn Wizard Step
+            for(Apttus__WizardStep2__c wizardStepSO : mapOfidtoWizardSteps.values()){
+                Decimal stepScore = 0;
+                // Calculation for **Absolute** Type of Wizard Step.
+                // Score = (Score * (Weight/100)) 
+                if('absolute'.equalsIgnoreCase(wizardStepSO.APTS_Scoring_Strategy__c)){
+                    for(Apttus__WizardRuntimeInput__c wizardRuntimeInputSO : mapOfSteptoRuntimeInput.get(wizardStepSO.id)){
+                        Decimal inputScore = 0;
+                        if(wizardRuntimeInputSO.APTS_Score__c != NULL){
+                            inputScore = wizardRuntimeInputSO.APTS_Score__c * (wizardRuntimeInputSO.Apttus__WizardInputControlId__r.APTS_Weight__c / 100);
+                        }
+                        stepScore = stepScore + inputScore;
+                    }
+                    
+                    mapOfWizardSteptoScore.put(wizardStepSO.id,functionF(stepScore));                
+                
+                } 
+                
+                // Calculation for **Relative** Type of Wizard Step
+                // Score = (Score of Importance type question/Total of Impotrance Answers)*(Score of ABB Vs. Comp Type Question) 
+                
+                else if('relative'.equalsIgnoreCase(wizardStepSO.APTS_Scoring_Strategy__c)){
+                  for(Apttus__WizardRuntimeInput__c wizardRuntimeInputSO : mapOfSteptoRuntimeInput.get(wizardStepSO.id)){
+                      if(mapOfRelativeData.containsKey(wizardRuntimeInputSO.Apttus__WizardInputControlId__r.Apttus__Keywords__c)){                          
+                           mapOfRelativeData.get(wizardRuntimeInputSO.Apttus__WizardInputControlId__r.Apttus__Keywords__c).put(wizardRuntimeInputSO.Apttus__WizardInputControlId__r.Apttus__Subcategory__c,wizardRuntimeInputSO);
+                      }
+                      else{
+                          Map<String,Apttus__WizardRuntimeInput__c> tempSubMapOfRelativeData = New Map<String,Apttus__WizardRuntimeInput__c>();
+                          tempSubMapOfRelativeData.put(wizardRuntimeInputSO.Apttus__WizardInputControlId__r.Apttus__Subcategory__c,wizardRuntimeInputSO);
+                          mapOfRelativeData.put(wizardRuntimeInputSO.Apttus__WizardInputControlId__r.Apttus__Keywords__c,tempSubMapOfRelativeData);
+                      }
+                      
+                      if('Importance'.equalsIgnoreCase(wizardRuntimeInputSO.Apttus__WizardInputControlId__r.Apttus__Subcategory__c)&& wizardRuntimeInputSO.APTS_Score__c != null){
+                               
+                                    totalOfImportance += wizardRuntimeInputSO.APTS_Score__c;
+                                                 
+                      }
+                  }
+                  
+                  Decimal TotalRelativeScore = 0;
+                  
+                  for(String Question : mapOfRelativeData.keySet()){
+                      
+                      Decimal QuestionScore = 0;
+                      
+                      if(mapOfRelativeData.get(Question).containsKey('Importance') && mapOfRelativeData.get(Question).containsKey('ABB vs. Comp') && mapOfRelativeData.get(Question).get('Importance').APTS_Score__c != NULL && mapOfRelativeData.get(Question).get('ABB vs. Comp').APTS_Score__c != NULL ){
+                          
+                          QuestionScore = (mapOfRelativeData.get(Question).get('Importance').APTS_Score__c / totalOfImportance)
+                                                         * (mapOfRelativeData.get(Question).get('ABB vs. Comp').APTS_Score__c);
+                          
+                          QuestionScore = QuestionScore.setScale(3);
+                          
+                      }
+                      
+                      TotalRelativeScore = TotalRelativeScore + QuestionScore;
+                  }
+                  mapOfWizardSteptoScore.put(wizardStepSO.id,functionF(TotalRelativeScore));
+                }
+            }
+            
+            system.debug('**ScoreMap' + mapOfWizardSteptoScore);
+            Decimal finalScore = 0;
+            
+            for(Apttus__WizardStep2__c wizardStepSO : mapOfidtoWizardSteps.values()){
+            
+                finalScore = finalScore +  (mapOfWizardSteptoScore.get(wizardStepSO.id).setScale(3) * (wizardStepSO.APTS_Weight__c / 100));
+            
+            }
+            wizardList[0].APTS_Actual_Score__c = finalScore;
+            wizardList[0].APTS_Score__c = functionG(finalScore);
+            update wizardList;
+
+            list<APTS_Account_Default_Answer__c> listOfAccountDefaultAnswer
+                    = [Select id,Name FROM APTS_Account_Default_Answer__c
+                       WHERE APTS_Account__c =:wizardList[0].APTS_Line_Item__r.Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__r.APTS_LP_AccountCustomer__r.id];
+
+            list<APTS_Account_Default_Answer__c> listOfAccountDefaultAnswertoInsert = New list<APTS_Account_Default_Answer__c>();
+
+            if(listOfAccountDefaultAnswer.isEmpty()){
+                
+                for(Apttus__WizardRuntimeInput__c wizardruntimeInputSO : mapOfidtoWizardRunTimeInput.values()){
+                if(mapOfidtoWizardInputControls.get(wizardruntimeInputSO.Apttus__WizardInputControlId__c).APTS_Default_From_Account__c){
+                    APTS_Account_Default_Answer__c AccountDefaultAnswerSO = New APTS_Account_Default_Answer__c();
+                    
+                    AccountDefaultAnswerSO.APTS_Wizard_Input_Control__c = wizardruntimeInputSO.Apttus__WizardInputControlId__c;
+                    AccountDefaultAnswerSO.APTS_Account__c = wizardList[0].APTS_Line_Item__r.Apttus_Config2__ConfigurationId__r.Apttus_QPConfig__Proposald__r.APTS_LP_AccountCustomer__c;
+                    AccountDefaultAnswerSO.APTS_Value__c = wizardruntimeInputSO.Apttus__ResponseValue__c;
+
+                    listOfAccountDefaultAnswertoInsert.add(AccountDefaultAnswerSO);
+                }
+                }
+
+                insert listOfAccountDefaultAnswertoInsert;
+            }
+
+        }
+
+        return req.requestBody.toString();
+    }
+    
+    // Score Rescalling : Function F(x). Refer Document's link provided in header for Function Detail.
+    public static Decimal functionF(Decimal x){
+        List<APTS_Wizard_Global_Variables__c> wizardGlobalVariables = APTS_Wizard_Global_Variables__c.getall().values();
+        if(!wizardGlobalVariables.isEmpty()){
+            APTS_Wizard_Global_Variables__c wizardGolbalData = wizardGlobalVariables[0];
+            Decimal returnValue = ((x - wizardGolbalData.APTS_Current_Spread_Hypothesis_Min__c)
+                                    /(wizardGolbalData.APTS_Current_Spread_Hypothesis_Max__c - wizardGolbalData.APTS_Current_Spread_Hypothesis_Min__c))
+                                    * (wizardGolbalData.APTS_Rescaling_Spread_Max__c - wizardGolbalData.APTS_Rescaling_Spread_Min__c);
+            if(returnValue < 0){
+                return 0;
+            }
+            else if(returnValue > 10){
+                return 10;
+            }
+            else{
+                return returnValue.setScale(3);
+            }
+        }
+        else{
+            Return -1;
+        }
+    }
+    
+    // Score Rescalling : Function G(x). Refer Document's link provided in header for Function Detail.
+    public static Decimal functionG(Decimal x){
+        List<APTS_Wizard_GofX__c> wizardGofX = APTS_Wizard_GofX__c.getall().values();
+        Decimal returnValue = -1;
+        
+        if(!wizardGofX.isEmpty()){
+            
+            for(APTS_Wizard_GofX__c GofX : wizardGofX){
+                if(X > GofX.APTS_X_Min__c && X < GofX.APTS_X_Max__c){
+                    returnValue = GofX.APTS_GofX__c;
+                }
+            } 
+        }
+        Return returnValue;
+    }
+}
